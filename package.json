@@ -1,0 +1,23 @@
+{
+  "name": "issue-sentinel",
+  "version": "1.0.0",
+  "description": "Easily connect to the smart Issue Sentinel with this GitHub Action. It helps you handle similar issues in your repository efficiently.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "ncc build src/main.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@actions/core": "^1.10.1",
+    "@actions/github": "^6.0.0",
+    "axios": "^1.7.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.9",
+    "@vercel/ncc": "^0.38.1",
+    "typescript": "^5.5.3"
+  }
+}

@@ -1,0 +1,13 @@
+name: 'Issue Sentinel Action'
+description: 'Get similar issues by Issue Sentinel'
+inputs:
+  password:  
+    description: 'Password to access the Issue Sentinel'
+    required: true
+  github-token:
+    description: 'The GitHub token used to create an authenticated client'
+    default: ${{ github.token }}
+    required: false
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
