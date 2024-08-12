@@ -26,7 +26,7 @@ To use the Issue Sentinel, follow these steps:
         runs-on: ubuntu-latest
         steps:
         - name: Run Issue Sentinel
-            uses: Azure/issue-sentinel@main
+            uses: Azure/issue-sentinel@v1
             with:
             password: ${{secrets.ISSUE_SENTINEL_PASSWORD}}
     ```
