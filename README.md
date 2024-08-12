@@ -8,7 +8,7 @@ To use the Issue Sentinel, follow these steps:
 
 1. Contact AzPyCLI@microsoft.com to get the password for the Sentinel. We will assist you with onboarding and add your repository to the database.
 
-1. Add the `ISSUE_COPILOT_PASSWORD` as a secret to your repository. Go to `Settings > Secrets and variables > Actions > New repository secret`.
+1. Add the `ISSUE_SENTINEL_PASSWORD` as a secret to your repository. Go to `Settings > Secrets and variables > Actions > New repository secret`.
 
 1. Add the following workflow in your repository.
 
@@ -28,7 +28,7 @@ To use the Issue Sentinel, follow these steps:
         - name: Run Issue Sentinel
             uses: Azure/issue-sentinel@main
             with:
-            password: ${{secrets.ISSUE_COPILOT_PASSWORD}}
+            password: ${{secrets.ISSUE_SENTINEL_PASSWORD}}
     ```
 
 ## Notes for developers
