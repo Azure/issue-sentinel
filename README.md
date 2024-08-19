@@ -16,19 +16,19 @@ To use the Issue Sentinel, follow these steps:
     #File: .github/workflows/RunIssueSentinel.yml
     name: Run issue sentinel
     on:
-    issues:
+      issues:
         types: [opened, edited, closed]
 
     jobs:
-    Issue:
+      Issue:
         permissions:
-            issues: write
+          issues: write
         runs-on: ubuntu-latest
         steps:
-        - name: Run Issue Sentinel
+          - name: Run Issue Sentinel
             uses: Azure/issue-sentinel@v1
             with:
-            password: ${{secrets.ISSUE_SENTINEL_PASSWORD}}
+              password: ${{secrets.ISSUE_SENTINEL_PASSWORD}}
     ```
 
 ## Notes for developers
