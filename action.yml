@@ -1,4 +1,4 @@
-name: 'Issue Sentinel Action'
+name: 'Issue Sentinel'
 description: 'Get similar issues by Issue Sentinel'
 inputs:
   password:  
