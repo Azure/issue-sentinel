@@ -20,14 +20,18 @@ async function main() {
         }
         const issue = context.payload.issue;
         core.debug(`Issue: ${JSON.stringify(issue)}`);
-        const { owner, repo } = github.context.repo;
+        const { owner, repo } = context.repo;
 
         if (enable_similar_issues_scanning === 'true') {
             await handleSimilarIssuesScanning(issue, owner, repo, password, token, botUrl, context);
         }
 
         if (enable_security_issues_scanning === 'true') {
-            core.info(`eventName: ${context.eventName}`)
+            core.debug(`Issue trigger: ${context.payload.action}`);
+            if (context.payload.action !== 'opened') {
+                core.info('Skip security issues scanning for edited and closed issue.');
+                return;
+            }
             await handleSecurityIssuesScanning(issue, owner, repo, password, token, botUrl, context);
         }
     }
