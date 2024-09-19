@@ -127,14 +127,14 @@ async function handleSecurityIssuesScanning(issue: any, owner: string, repo: str
         return;
     }
     
-    const ifsecurity = (await axios.post(botUrl + '/security/', {
+    const if_security = (await axios.post(botUrl + '/security/', {
         'raw': issue,
         'password': password
-    })).data.predict;
+    })).data.security;
     core.info('Search the security issues by the issue sentinel successfully.');
-    core.debug(`Response: ${ifsecurity}`);
+    core.debug(`Response: ${if_security}`);
 
-    if (!ifsecurity) {
+    if (!if_security) {
         core.info('Not a security issue.');
         return;
     }

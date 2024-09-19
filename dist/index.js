@@ -31673,13 +31673,13 @@ function handleSecurityIssuesScanning(issue, owner, repo, password, token, botUr
             core.info('This issue has already been labeled as Security-Issue. Skip this issue.');
             return;
         }
-        const ifsecurity = (yield axios_1.default.post(botUrl + '/security/', {
+        const if_security = (yield axios_1.default.post(botUrl + '/security/', {
             'raw': issue,
             'password': password
-        })).data.predict;
+        })).data.security;
         core.info('Search the security issues by the issue sentinel successfully.');
-        core.debug(`Response: ${ifsecurity}`);
-        if (!ifsecurity) {
+        core.debug(`Response: ${if_security}`);
+        if (!if_security) {
             core.info('Not a security issue.');
             return;
         }
