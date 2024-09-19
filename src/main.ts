@@ -27,6 +27,7 @@ async function main() {
         }
 
         if (enable_security_issues_scanning === 'true') {
+            core.info(`eventName: ${context.eventName}`)
             await handleSecurityIssuesScanning(issue, owner, repo, password, token, botUrl, context);
         }
     }

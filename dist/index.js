@@ -31582,6 +31582,7 @@ function main() {
                 yield handleSimilarIssuesScanning(issue, owner, repo, password, token, botUrl, context);
             }
             if (enable_security_issues_scanning === 'true') {
+                core.info(`eventName: ${context.eventName}`);
                 yield handleSecurityIssuesScanning(issue, owner, repo, password, token, botUrl, context);
             }
         }
