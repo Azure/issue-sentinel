@@ -53,7 +53,7 @@ async function main() {
         })).data;
         const prediction: any[][] = response.predict;
         core.info('Search by the issue sentinel successfully.');
-        core.info(`Response: ${response}`);
+        core.debug(`Response: ${response}`);
         if (!prediction || prediction.length === 0) {
             core.info('No prediction found');
             return;
