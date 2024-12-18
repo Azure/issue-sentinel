@@ -53,7 +53,7 @@ async function main() {
         })).data;
         const prediction: any[][] = response.predict;
         core.info('Search by the issue sentinel successfully.');
-        core.debug(`Response: ${prediction}`);
+        core.info(`Response: ${response}`);
         if (!prediction || prediction.length === 0) {
             core.info('No prediction found');
             return;
@@ -62,7 +62,7 @@ async function main() {
         for (const item of prediction) {
             message += `- #${item[item.length - 1]}\n`
         }
-        message = message.trimEnd();
+
         const solution: any[] = response.solution;
         if (!solution || solution.length === 0) {
             core.info('No solution found');
@@ -81,6 +81,8 @@ async function main() {
                 }
             }
         }
+
+        message = message.trimEnd();
 
         const octokit = github.getOctokit(token);
         const issueNumber = context.payload.issue.number;
