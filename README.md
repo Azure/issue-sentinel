@@ -1,6 +1,6 @@
 # Issue Sentinel
 
-Easily connect to the smart Issue Sentinel with this GitHub Action. It helps you handle similar issues in your repository efficiently.
+Easily connect to the smart Issue Sentinel with this GitHub Action. It helps you handle similar issues and security issues in your repository efficiently.
 
 ## Use the Issue Sentinel
 
@@ -29,6 +29,8 @@ To use the Issue Sentinel, follow these steps:
             uses: Azure/issue-sentinel@v1
             with:
               password: ${{secrets.ISSUE_SENTINEL_PASSWORD}}
+              enable-similar-issues-scanning: true # Scan similar issues in your repo, default: true
+              enable-security-issues-scanning: true # Scan security issues in your repo, default: false
     ```
 
 ## Notes for developers
