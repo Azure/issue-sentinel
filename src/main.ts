@@ -46,13 +46,13 @@ async function main() {
             return;
         }
 
-        const prediction: any[][] = (await axios.post(botUrl + '/search/', {
+        const response = (await axios.post(botUrl + '/search/', {
             'raw': issue,
             'password': password,
             'verify': true
-        })).data.predict;
+        })).data;
+        const prediction: any[][] = response.predict;
         core.info('Search by the issue sentinel successfully.');
-
         core.debug(`Response: ${prediction}`);
         if (!prediction || prediction.length === 0) {
             core.info('No prediction found');
@@ -63,6 +63,24 @@ async function main() {
             message += `- #${item[item.length - 1]}\n`
         }
         message = message.trimEnd();
+        const solution: any[] = response.solution;
+        if (!solution || solution.length === 0) {
+            core.info('No solution found');
+        }
+        else {
+            message += '------------\n\nPossible solution (Extracted from existing issue, might be incorrect; please verify carefully)\n';
+            let i = 1;
+            for (const item of solution) {
+                message += `### Solution ${i}:\n` + item.solution + '\n';
+                i++;
+                if (item.reference.length > 0) {
+                    message += 'Reference:\n';
+                }
+                for (const ref of item.reference) {
+                    message += `- ${ref}\n`;
+                }
+            }
+        }
 
         const octokit = github.getOctokit(token);
         const issueNumber = context.payload.issue.number;
