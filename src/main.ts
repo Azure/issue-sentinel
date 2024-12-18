@@ -71,7 +71,7 @@ async function main() {
             message += '------------\n\nPossible solution (Extracted from existing issue, might be incorrect; please verify carefully)\n\n';
             let i = 1;
             for (const item of solution) {
-                if (item.solution.length > 1) {
+                if (solution.length > 1) {
                     message += `### Solution ${i}:\n`;
                 }
                 message += item.solution + '\n\n'
