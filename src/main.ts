@@ -71,10 +71,10 @@ async function main() {
             message += '------------\n\nPossible solution (Extracted from existing issue, might be incorrect; please verify carefully)\n';
             let i = 1;
             for (const item of solution) {
-                message += `### Solution ${i}:\n` + item.solution + '\n';
+                message += `### Solution ${i}:\n` + item.solution + '\n\n';
                 i++;
                 if (item.reference.length > 0) {
-                    message += 'Reference:\n';
+                    message += '**Reference**:\n';
                 }
                 for (const ref of item.reference) {
                     message += `- ${ref}\n`;
