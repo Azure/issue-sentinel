@@ -13,7 +13,9 @@ async function main() {
         if (!context.payload.issue) {
             throw new Error("No issue found in the context payload. Please check your workflow trigger is 'issues'");
         }
+        const octokit = github.getOctokit(token);
         const issue = context.payload.issue;
+        const issueNumber = issue.number;
         core.debug(`Issue: ${JSON.stringify(issue)}`);
         const { owner, repo } = github.context.repo;
         let owner_repo = `${owner}/${repo}`;
@@ -58,6 +60,16 @@ async function main() {
             core.info('No prediction found');
             return;
         }
+
+        let labels = ["Similar-Issue"];
+        await octokit.rest.issues.addLabels({
+            owner,
+            repo,
+            issue_number: issueNumber,
+            labels
+        });
+        core.info(`Label 'Similar-Issue' added to issue #${issueNumber}`);
+
         let message = 'Here are some similar issues that might help you. Please check if they can solve your problem.\n'
         for (const item of prediction) {
             message += `- #${item[item.length - 1]}\n`
@@ -68,6 +80,15 @@ async function main() {
             core.info('No solution found');
         }
         else {
+            let labels = ["Possible-Solution"];
+            await octokit.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                labels
+            });
+            core.info(`Label 'Possible-Solution' added to issue #${issueNumber}`);
+            
             message += '------------\n\nPossible solution (Extracted from existing issue, might be incorrect; please verify carefully)\n\n';
             let i = 1;
             for (const item of solution) {
@@ -87,9 +108,6 @@ async function main() {
 
         message = message.trimEnd();
 
-        const octokit = github.getOctokit(token);
-        const issueNumber = context.payload.issue.number;
-
         await octokit.rest.issues.createComment({
             owner,
             repo,
@@ -97,15 +115,6 @@ async function main() {
             body: message
         });
         core.info(`Comment sended to issue #${issueNumber}`);
-
-        const labels = ["Similar-Issue"];
-        await octokit.rest.issues.addLabels({
-            owner,
-            repo,
-            issue_number: issueNumber,
-            labels
-        });
-        core.info(`Label added to issue #${issueNumber}`);
 
         await axios.post(botUrl + '/add_reply/', {
             'repo': owner_repo,
