@@ -67,20 +67,20 @@ async function main() {
         }
 
         const solution: any[] = response.solution;
-        let is_possible_solution_existed: boolean = false;
+        let isPossibleSolutionPresent: boolean = false;
         if (!solution || solution.length === 0) {
             core.info('No solution found');
         }
         else {
-            is_possible_solution_existed = true;
+            isPossibleSolutionPresent = true;
             message += '------------\n\nPossible solution (Extracted from existing issue, might be incorrect; please verify carefully)\n\n';
-            let i = 1;
+            let solutionIndex = 1;
             for (const item of solution) {
                 if (solution.length > 1) {
-                    message += `### Solution ${i}:\n`;
+                    message += `### Solution ${solutionIndex}:\n`;
                 }
                 message += item.solution + '\n\n'
-                i++;
+                solutionIndex++;
                 if (item.reference.length > 0) {
                     message += '**Reference**:\n';
                 }
@@ -91,7 +91,7 @@ async function main() {
         }
 
         let labels = ["Similar-Issue"];
-        if (is_possible_solution_existed) {
+        if (isPossibleSolutionPresent) {
             labels.push("Possible-Solution");
         }
         await octokit.rest.issues.addLabels({
