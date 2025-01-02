@@ -100,7 +100,7 @@ async function main() {
             issue_number: issueNumber,
             labels
         });
-        core.info(`Label 'Similar-Issue' added to issue #${issueNumber}`);
+        core.info(`Labels added to issue #${issueNumber}`);
 
         message = message.trimEnd();
         await octokit.rest.issues.createComment({
