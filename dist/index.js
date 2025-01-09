@@ -31682,7 +31682,7 @@ function handleSimilarIssuesScanning(issue, owner, repo, password, token, botUrl
             issue_number: issueNumber,
             body: message
         });
-        core.info(`Comment sended to issue #${issueNumber}`);
+        core.info(`Comment sent to issue #${issueNumber}`);
         yield axios_1.default.post(botUrl + '/add_reply/', {
             'repo': owner_repo,
             'issue': issue.number,
@@ -31722,7 +31722,7 @@ function handleSecurityIssuesScanning(issue, owner, repo, password, token, botUr
             issue_number: issueNumber,
             body: message
         });
-        core.info(`Comment sended to issue #${issueNumber}`);
+        core.info(`Comment sent to issue #${issueNumber}`);
         const labels = ["Security-Issue"];
         yield octokit.rest.issues.addLabels({
             owner,

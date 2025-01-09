@@ -134,7 +134,7 @@ async function handleSimilarIssuesScanning(issue: any, owner: string, repo: stri
         issue_number: issueNumber,
         body: message
     });
-    core.info(`Comment sended to issue #${issueNumber}`);
+    core.info(`Comment sent to issue #${issueNumber}`);
 
     await axios.post(botUrl + '/add_reply/', {
         'repo': owner_repo,
@@ -144,7 +144,7 @@ async function handleSimilarIssuesScanning(issue: any, owner: string, repo: stri
     core.info('Save replied issue to issue sentinel.');
 }
 
-async function handleSecurityIssuesScanning(issue: any, owner: string, repo: string, password: string, token: string, botUrl: string) {  
+async function handleSecurityIssuesScanning(issue: any, owner: string, repo: string, password: string, token: string, botUrl: string) {
     const octokit = github.getOctokit(token);
     const issueNumber = issue.number;
     const { data: existedLabels } = await octokit.rest.issues.listLabelsOnIssue({
@@ -153,12 +153,12 @@ async function handleSecurityIssuesScanning(issue: any, owner: string, repo: str
         issue_number: issueNumber,
     });
     const labelExists = existedLabels.some((label: { name: string }) => label.name === "Security-Issue");
-    
+
     if (labelExists) {
         core.info('This issue has already been labeled as Security-Issue. Skip this issue.');
         return;
     }
-    
+
     const if_security = (await axios.post(botUrl + '/security/', {
         'raw': issue,
         'password': password
@@ -178,7 +178,7 @@ async function handleSecurityIssuesScanning(issue: any, owner: string, repo: str
         issue_number: issueNumber,
         body: message
     });
-    core.info(`Comment sended to issue #${issueNumber}`);
+    core.info(`Comment sent to issue #${issueNumber}`);
 
     const labels = ["Security-Issue"];
     await octokit.rest.issues.addLabels({
@@ -190,4 +190,4 @@ async function handleSecurityIssuesScanning(issue: any, owner: string, repo: str
     core.info(`Label added to issue #${issueNumber}`);
 }
 
-main();  
+main();
