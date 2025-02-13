@@ -2,6 +2,8 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import axios from 'axios';
 
+const PoweredBy = "\n_Powered by [issue-sentinel](https://github.com/Azure/issue-Sentinel)_";
+
 async function main() {
     try {
         const password = core.getInput('password');
@@ -114,7 +116,7 @@ async function handleSimilarIssuesScanning(issue: any, owner: string, repo: stri
             }
         }
     }
-    message += '\n_Powered by [issue-sentinel](https://github.com/Azure/issue-Sentinel)_';
+    message += PoweredBy;
 
     let labels = ["Similar-Issue"];
     if (isPossibleSolutionPresent) {
@@ -173,7 +175,7 @@ async function handleSecurityIssuesScanning(issue: any, owner: string, repo: str
     }
 
     let message = 'This issue is related to security. Please pay attention.\n'
-    message += '\n_Powered by [issue-sentinel](https://github.com/Azure/issue-Sentinel)_';
+    message += PoweredBy;
     await octokit.rest.issues.createComment({
         owner,
         repo,
