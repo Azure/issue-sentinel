@@ -31664,7 +31664,7 @@ function handleSimilarIssuesScanning(issue, owner, repo, password, token, botUrl
                 }
             }
         }
-        message += 'Powered by [issue-sentinel](https://github.com/Azure/issue-Sentinel)';
+        message += '\n_Powered by [issue-sentinel](https://github.com/Azure/issue-Sentinel)_';
         let labels = ["Similar-Issue"];
         if (isPossibleSolutionPresent) {
             labels.push("Possible-Solution");
@@ -31717,6 +31717,7 @@ function handleSecurityIssuesScanning(issue, owner, repo, password, token, botUr
             return;
         }
         let message = 'This issue is related to security. Please pay attention.\n';
+        message += '\n_Powered by [issue-sentinel](https://github.com/Azure/issue-Sentinel)_';
         yield octokit.rest.issues.createComment({
             owner,
             repo,

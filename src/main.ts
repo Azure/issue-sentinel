@@ -114,7 +114,7 @@ async function handleSimilarIssuesScanning(issue: any, owner: string, repo: stri
             }
         }
     }
-    message += 'Powered by [issue-sentinel](https://github.com/Azure/issue-Sentinel)';
+    message += '\n_Powered by [issue-sentinel](https://github.com/Azure/issue-Sentinel)_';
 
     let labels = ["Similar-Issue"];
     if (isPossibleSolutionPresent) {
@@ -173,6 +173,7 @@ async function handleSecurityIssuesScanning(issue: any, owner: string, repo: str
     }
 
     let message = 'This issue is related to security. Please pay attention.\n'
+    message += '\n_Powered by [issue-sentinel](https://github.com/Azure/issue-Sentinel)_';
     await octokit.rest.issues.createComment({
         owner,
         repo,
