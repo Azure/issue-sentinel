@@ -31664,6 +31664,7 @@ function handleSimilarIssuesScanning(issue, owner, repo, password, token, botUrl
                 }
             }
         }
+        message += 'Powered by [issue-sentinel](https://github.com/Azure/issue-Sentinel)';
         let labels = ["Similar-Issue"];
         if (isPossibleSolutionPresent) {
             labels.push("Possible-Solution");

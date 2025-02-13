@@ -114,6 +114,7 @@ async function handleSimilarIssuesScanning(issue: any, owner: string, repo: stri
             }
         }
     }
+    message += 'Powered by [issue-sentinel](https://github.com/Azure/issue-Sentinel)';
 
     let labels = ["Similar-Issue"];
     if (isPossibleSolutionPresent) {
