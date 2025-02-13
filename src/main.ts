@@ -100,7 +100,7 @@ async function handleSimilarIssuesScanning(issue: any, owner: string, repo: stri
     }
     else {
         isPossibleSolutionPresent = true;
-        message += '------------\n\nPossible solution (Extracted from existing issue, might be incorrect; please verify carefully)\n\n';
+        message += '------------\n\n**Possible solution (Extracted from existing issue, might be incorrect; please verify carefully)**\n\n';
         let solutionIndex = 1;
         for (const item of solution) {
             if (solution.length > 1) {
