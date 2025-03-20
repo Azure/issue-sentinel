@@ -40,3 +40,10 @@ To build the action, use the following commands:
 1. `npm install`
 
 1. `npm run build`
+
+## Used by
+- [Azure CLI](https://github.com/Azure/azure-cli)
+- [Azure PowerShell](https://github.com/Azure/azure-powershell)
+- [Office JS](https://github.com/OfficeDev/office-js)
+- [Microsoft Authentication Library (MSAL) for Python](https://github.com/AzureAD/microsoft-authentication-library-for-python)
+- [Microsoft Authentication Library (MSAL) for .NET](https://github.com/AzureAD/microsoft-authentication-library-for-dotnet)
