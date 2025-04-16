@@ -78,7 +78,8 @@ async function handleSimilarIssuesScanning(issue: any, owner: string, repo: stri
     const response = (await axios.post(botUrl + '/search/', {
         'raw': issue,
         'password': password,
-        'verify': true
+        'verify': true,
+        'token': token, //used for access issue comment to get possible solution
     })).data;
     const prediction: any[][] = response.predict;
     core.info('Search by the issue sentinel successfully.');
