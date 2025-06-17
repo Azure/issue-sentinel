@@ -15,7 +15,7 @@ async function main() {
             throw new Error('Invalid input! Both similar issues scanning and security issues scanning are disabled. Please enable at least one of them.');
         }
 
-        const botUrl = 'https://similar-bot-prod.calmhill-ec497646.eastus.azurecontainerapps.io';
+        const botUrl = 'https://similar-bot-prod-v2.wonderfulstone-4279f63d.eastus.azurecontainerapps.io';
         const context = github.context;
         if (!context.payload.issue) {
             throw new Error("No issue found in the context payload. Please check your workflow trigger is 'issues'");
@@ -88,6 +88,7 @@ async function handleSimilarIssuesScanning(issue: any, owner: string, repo: stri
         core.info('No prediction found');
         return;
     }
+
 
     let message = 'Here are some similar issues that might help you. Please check if they can solve your problem.\n'
     for (const item of prediction) {
