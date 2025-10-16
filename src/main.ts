@@ -120,6 +120,18 @@ async function handleSimilarIssuesScanning(issue: any, owner: string, repo: stri
     }
     message += PoweredBy;
 
+    // Check reply status again before adding labels and comments to prevent duplicate labels and comments
+    const if_replied_again: boolean = (await axios.post(botUrl + '/check_reply/', {
+        'repo': owner_repo,
+        'issue': issue.number,
+        'password': password
+    })).data.result;
+
+    if (if_replied_again) {
+        core.info('This issue was already replied by the sentinel during processing. Skip adding labels and comments.');
+        return;
+    }
+
     let labels = ["Similar-Issue"];
     if (isPossibleSolutionPresent) {
         labels.push("Possible-Solution");
@@ -173,6 +185,19 @@ async function handleSecurityIssuesScanning(issue: any, owner: string, repo: str
 
     if (!if_security) {
         core.info('Not a security issue.');
+        return;
+    }
+
+    // Check Security-Issue label again before adding to prevent duplicate labels and comments
+    const { data: existedLabelsAgain } = await octokit.rest.issues.listLabelsOnIssue({
+        owner,
+        repo,
+        issue_number: issueNumber,
+    });
+    const labelExistsAgain = existedLabelsAgain.some((label: { name: string }) => label.name === "Security-Issue");
+
+    if (labelExistsAgain) {
+        core.info('This issue has already been labeled as Security-Issue during processing. Skip adding label and comment.');
         return;
     }
 
