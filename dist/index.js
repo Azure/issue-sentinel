@@ -32745,14 +32745,15 @@ function handleSimilarIssuesScanning(issue, owner, repo, password, token, botUrl
             }
         }
         message += PoweredBy;
-        // Check reply status again before adding labels and comments to prevent duplicate labels and comments
-        const if_replied_again = (yield axios_1.default.post(botUrl + '/check_reply/', {
-            'repo': owner_repo,
-            'issue': issue.number,
-            'password': password
-        })).data.result;
-        if (if_replied_again) {
-            core.info('This issue was already replied by the sentinel during processing. Skip adding labels and comments.');
+        // Check Similar-Issue label again before adding to prevent duplicate labels and comments
+        const { data: existedLabelsAgain } = yield octokit.rest.issues.listLabelsOnIssue({
+            owner,
+            repo,
+            issue_number: issueNumber,
+        });
+        const labelExistsAgain = existedLabelsAgain.some((label) => label.name === "Similar-Issue");
+        if (labelExistsAgain) {
+            core.info('This issue has already been labeled as Similar-Issue during processing. Skip adding label and comment.');
             return;
         }
         let labels = ["Similar-Issue"];
@@ -32817,6 +32818,14 @@ function handleSecurityIssuesScanning(issue, owner, repo, password, token, botUr
             core.info('This issue has already been labeled as Security-Issue during processing. Skip adding label and comment.');
             return;
         }
+        const labels = ["Security-Issue"];
+        yield octokit.rest.issues.addLabels({
+            owner,
+            repo,
+            issue_number: issueNumber,
+            labels
+        });
+        core.info(`Label added to issue #${issueNumber}`);
         let message = 'This issue is related to security. Please pay attention.\n';
         message += PoweredBy;
         yield octokit.rest.issues.createComment({
@@ -32826,14 +32835,6 @@ function handleSecurityIssuesScanning(issue, owner, repo, password, token, botUr
             body: message
         });
         core.info(`Comment sent to issue #${issueNumber}`);
-        const labels = ["Security-Issue"];
-        yield octokit.rest.issues.addLabels({
-            owner,
-            repo,
-            issue_number: issueNumber,
-            labels
-        });
-        core.info(`Label added to issue #${issueNumber}`);
     });
 }
 main();
