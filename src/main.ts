@@ -14,7 +14,7 @@ async function main() {
             throw new Error('Invalid input! Both similar issues scanning and security issues scanning are disabled. Please enable at least one of them.');
         }
 
-        const botUrl = 'https://similar-bot-test-v2.wonderfulstone-4279f63d.eastus.azurecontainerapps.io';
+        const botUrl = 'https://similar-bot-prod-v2.wonderfulstone-4279f63d.eastus.azurecontainerapps.io';
         const context = github.context;
         if (!context.payload.issue) {
             throw new Error("No issue found in the context payload. Please check your workflow trigger is 'issues'");
