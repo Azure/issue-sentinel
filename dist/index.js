@@ -32641,7 +32641,6 @@ const PoweredBy = "\n_Powered by [issue-sentinel](https://github.com/Azure/issue
 function main() {
     return __awaiter(this, void 0, void 0, function* () {
         try {
-            const password = core.getInput('password');
             //TODO: use github token for authentication
             const token = core.getInput('github-token', { required: true });
             const enable_similar_issues_scanning = core.getInput('enable-similar-issues-scanning');
@@ -32658,7 +32657,7 @@ function main() {
             core.debug(`Issue: ${JSON.stringify(issue)}`);
             const { owner, repo } = context.repo;
             if (enable_similar_issues_scanning === 'true') {
-                yield handleSimilarIssuesScanning(issue, owner, repo, password, token, botUrl);
+                yield handleSimilarIssuesScanning(issue, owner, repo, token, botUrl);
             }
             if (enable_security_issues_scanning === 'true') {
                 core.debug(`Issue trigger: ${context.payload.action}`);
@@ -32666,7 +32665,7 @@ function main() {
                     core.info('Skip security issues scanning for edited and closed issue.');
                     return;
                 }
-                yield handleSecurityIssuesScanning(issue, owner, repo, password, token, botUrl);
+                yield handleSecurityIssuesScanning(issue, owner, repo, token, botUrl);
             }
         }
         catch (error) {
@@ -32674,7 +32673,7 @@ function main() {
         }
     });
 }
-function handleSimilarIssuesScanning(issue, owner, repo, password, token, botUrl) {
+function handleSimilarIssuesScanning(issue, owner, repo, token, botUrl) {
     return __awaiter(this, void 0, void 0, function* () {
         const octokit = github.getOctokit(token);
         const issueNumber = issue.number;
@@ -32685,7 +32684,7 @@ function handleSimilarIssuesScanning(issue, owner, repo, password, token, botUrl
         if (if_closed) {
             yield axios_1.default.post(botUrl + '/update_issue/', {
                 'raw': issue,
-                'password': password
+                'token': token
             });
             core.info('This issue was closed. Update it to issue sentinel.');
             return;
@@ -32693,20 +32692,19 @@ function handleSimilarIssuesScanning(issue, owner, repo, password, token, botUrl
         const if_replied = (yield axios_1.default.post(botUrl + '/check_reply/', {
             'repo': owner_repo,
             'issue': issue.number,
-            'password': password
+            'token': token
         })).data.result;
         core.info('Check if this issue was already replied by the sentinel: ' + if_replied.toString());
         if (if_replied) {
             yield axios_1.default.post(botUrl + '/update_issue/', {
                 'raw': issue,
-                'password': password
+                'token': token
             });
             core.info('This issue was already replied by the sentinel. Update the edited content to sentinel and skip this issue.');
             return;
         }
         const response = (yield axios_1.default.post(botUrl + '/search/', {
             'raw': issue,
-            'password': password,
             'verify': true,
             'token': token //used for access issue comment to get possible solution
         })).data;
@@ -32749,7 +32747,7 @@ function handleSimilarIssuesScanning(issue, owner, repo, password, token, botUrl
         const if_replied_again = (yield axios_1.default.post(botUrl + '/check_reply/', {
             'repo': owner_repo,
             'issue': issue.number,
-            'password': password
+            'token': token
         })).data.result;
         if (if_replied_again) {
             core.info('This issue was already replied by the sentinel during processing. Skip adding labels and comments.');
@@ -32777,12 +32775,12 @@ function handleSimilarIssuesScanning(issue, owner, repo, password, token, botUrl
         yield axios_1.default.post(botUrl + '/add_reply/', {
             'repo': owner_repo,
             'issue': issue.number,
-            'password': password
+            'token': token
         });
         core.info('Save replied issue to issue sentinel.');
     });
 }
-function handleSecurityIssuesScanning(issue, owner, repo, password, token, botUrl) {
+function handleSecurityIssuesScanning(issue, owner, repo, token, botUrl) {
     return __awaiter(this, void 0, void 0, function* () {
         const octokit = github.getOctokit(token);
         const issueNumber = issue.number;
@@ -32798,7 +32796,7 @@ function handleSecurityIssuesScanning(issue, owner, repo, password, token, botUr
         }
         const if_security = (yield axios_1.default.post(botUrl + '/security/', {
             'raw': issue,
-            'password': password
+            'token': token
         })).data.security;
         core.info('Search the security issues by the issue sentinel successfully.');
         core.debug(`Response: ${if_security}`);

@@ -1,9 +1,6 @@
 name: 'Issue Sentinel'
 description: 'Get similar issues by Issue Sentinel'
 inputs:
-  password:  
-    description: 'Password to access the Issue Sentinel'
-    required: true
   github-token:
     description: 'The GitHub token used to create an authenticated client'
     default: ${{ github.token }}

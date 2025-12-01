@@ -6,7 +6,6 @@ const PoweredBy = "\n_Powered by [issue-sentinel](https://github.com/Azure/issue
 
 async function main() {
     try {
-        const password = core.getInput('password');
         //TODO: use github token for authentication
         const token = core.getInput('github-token', { required: true });
         const enable_similar_issues_scanning = core.getInput('enable-similar-issues-scanning');
@@ -25,7 +24,7 @@ async function main() {
         const { owner, repo } = context.repo;
 
         if (enable_similar_issues_scanning === 'true') {
-            await handleSimilarIssuesScanning(issue, owner, repo, password, token, botUrl);
+            await handleSimilarIssuesScanning(issue, owner, repo, token, botUrl);
         }
 
         if (enable_security_issues_scanning === 'true') {
@@ -34,7 +33,7 @@ async function main() {
                 core.info('Skip security issues scanning for edited and closed issue.');
                 return;
             }
-            await handleSecurityIssuesScanning(issue, owner, repo, password, token, botUrl);
+            await handleSecurityIssuesScanning(issue, owner, repo, token, botUrl);
         }
     }
     catch (error: any) {
@@ -42,7 +41,7 @@ async function main() {
     }
 }
 
-async function handleSimilarIssuesScanning(issue: any, owner: string, repo: string, password: string, token: string, botUrl: string) {
+async function handleSimilarIssuesScanning(issue: any, owner: string, repo: string, token: string, botUrl: string) {
     const octokit = github.getOctokit(token);
     const issueNumber = issue.number;
     let owner_repo = `${owner}/${repo}`;
@@ -53,7 +52,7 @@ async function handleSimilarIssuesScanning(issue: any, owner: string, repo: stri
     if (if_closed) {
         await axios.post(botUrl + '/update_issue/', {
             'raw': issue,
-            'password': password
+            'token': token
         })
         core.info('This issue was closed. Update it to issue sentinel.');
         return;
@@ -62,14 +61,14 @@ async function handleSimilarIssuesScanning(issue: any, owner: string, repo: stri
     const if_replied: boolean = (await axios.post(botUrl + '/check_reply/', {
         'repo': owner_repo,
         'issue': issue.number,
-        'password': password
+        'token': token
     })).data.result;
     core.info('Check if this issue was already replied by the sentinel: ' + if_replied.toString());
 
     if (if_replied) {
         await axios.post(botUrl + '/update_issue/', {
             'raw': issue,
-            'password': password
+            'token': token
         })
         core.info('This issue was already replied by the sentinel. Update the edited content to sentinel and skip this issue.');
         return;
@@ -77,7 +76,6 @@ async function handleSimilarIssuesScanning(issue: any, owner: string, repo: stri
 
     const response = (await axios.post(botUrl + '/search/', {
         'raw': issue,
-        'password': password,
         'verify': true,
         'token': token //used for access issue comment to get possible solution
     })).data;
@@ -124,7 +122,7 @@ async function handleSimilarIssuesScanning(issue: any, owner: string, repo: stri
     const if_replied_again: boolean = (await axios.post(botUrl + '/check_reply/', {
         'repo': owner_repo,
         'issue': issue.number,
-        'password': password
+        'token': token
     })).data.result;
 
     if (if_replied_again) {
@@ -156,12 +154,12 @@ async function handleSimilarIssuesScanning(issue: any, owner: string, repo: stri
     await axios.post(botUrl + '/add_reply/', {
         'repo': owner_repo,
         'issue': issue.number,
-        'password': password
+        'token': token
     });
     core.info('Save replied issue to issue sentinel.');
 }
 
-async function handleSecurityIssuesScanning(issue: any, owner: string, repo: string, password: string, token: string, botUrl: string) {
+async function handleSecurityIssuesScanning(issue: any, owner: string, repo: string, token: string, botUrl: string) {
     const octokit = github.getOctokit(token);
     const issueNumber = issue.number;
     const { data: existedLabels } = await octokit.rest.issues.listLabelsOnIssue({
@@ -178,7 +176,7 @@ async function handleSecurityIssuesScanning(issue: any, owner: string, repo: str
 
     const if_security = (await axios.post(botUrl + '/security/', {
         'raw': issue,
-        'password': password
+        'token': token
     })).data.security;
     core.info('Search the security issues by the issue sentinel successfully.');
     core.debug(`Response: ${if_security}`);
