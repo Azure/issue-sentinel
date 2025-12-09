@@ -21,6 +21,7 @@ async function main() {
         }
         const issue = context.payload.issue;
         core.debug(`Issue: ${JSON.stringify(issue)}`);
+        core.debug(`Issue reactions: ${JSON.stringify(issue.reactions)}`);
         const { owner, repo } = context.repo;
 
         if (enable_similar_issues_scanning === 'true') {
