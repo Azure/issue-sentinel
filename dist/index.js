@@ -32641,12 +32641,12 @@ const PoweredBy = "\n_Powered by [issue-sentinel](https://github.com/Azure/issue
 function main() {
     return __awaiter(this, void 0, void 0, function* () {
         try {
-            //TODO: use github token for authentication
             const token = core.getInput('github-token', { required: true });
             const enable_similar_issues_scanning = core.getInput('enable-similar-issues-scanning');
             const enable_security_issues_scanning = core.getInput('enable-security-issues-scanning');
-            if (enable_similar_issues_scanning !== 'true' && enable_security_issues_scanning !== 'true') {
-                throw new Error('Invalid input! Both similar issues scanning and security issues scanning are disabled. Please enable at least one of them.');
+            const enable_ux_tag = core.getInput('enable-ux-tag');
+            if (enable_similar_issues_scanning !== 'true' && enable_security_issues_scanning !== 'true' && enable_ux_tag !== 'true') {
+                throw new Error('Invalid input! Similar issues scanning, security issues scanning, and UX tag are all disabled. Please enable at least one of them.');
             }
             const botUrl = 'https://similar-bot-prod-v2.wonderfulstone-4279f63d.eastus.azurecontainerapps.io';
             const context = github.context;
@@ -32666,6 +32666,14 @@ function main() {
                     return;
                 }
                 yield handleSecurityIssuesScanning(issue, owner, repo, token, botUrl);
+            }
+            if (enable_ux_tag === 'true') {
+                core.debug(`Issue trigger: ${context.payload.action}`);
+                if (context.payload.action !== 'opened') {
+                    core.info('Skip adding UX tag for edited and closed issue.');
+                    return;
+                }
+                yield handleUXTag(issue, owner, repo, token, botUrl);
             }
         }
         catch (error) {
@@ -32821,6 +32829,30 @@ function handleSecurityIssuesScanning(issue, owner, repo, token, botUrl) {
             labels
         });
         core.info(`Label added to issue #${issueNumber}`);
+    });
+}
+function handleUXTag(issue, owner, repo, token, botUrl) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const octokit = github.getOctokit(token);
+        const issueNumber = issue.number;
+        const tagName = (yield axios_1.default.post(botUrl + '/ux_tag/', {
+            'raw': issue,
+            'token': token
+        })).data.tag;
+        ;
+        core.info('Get UX tag by the issue sentinel successfully.');
+        if (!tagName) {
+            core.info('No UX tag found.');
+            return;
+        }
+        const labels = [tagName];
+        yield octokit.rest.issues.addLabels({
+            owner,
+            repo,
+            issue_number: issueNumber,
+            labels
+        });
+        core.info(`UX Tag ${tagName} added to issue #${issueNumber}`);
     });
 }
 main();

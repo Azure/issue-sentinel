@@ -13,6 +13,10 @@ inputs:
     description: 'Enable security issues scanning'
     default: 'false'
     required: false
+  enable-ux-tag: 
+    description: 'Enable UX tag'
+    default: 'false'
+    required: false
 branding:
   icon: 'shield'
   color: 'blue'

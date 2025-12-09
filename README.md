@@ -28,6 +28,7 @@ To use the Issue Sentinel, follow these steps:
             with:
               enable-similar-issues-scanning: true # Scan similar issues in your repo, default: true
               enable-security-issues-scanning: true # Scan security issues in your repo, default: false
+              enable-ux-tag: true # Adding ux tag for the issue, default: false
     ```
 
 ## Notes for developers
