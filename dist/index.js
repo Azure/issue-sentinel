@@ -32648,14 +32648,13 @@ function main() {
             if (enable_similar_issues_scanning !== 'true' && enable_security_issues_scanning !== 'true' && enable_ux_tag !== 'true') {
                 throw new Error('Invalid input! Similar issues scanning, security issues scanning, and UX tag are all disabled. Please enable at least one of them.');
             }
-            const botUrl = 'https://similar-bot-prod-v2.wonderfulstone-4279f63d.eastus.azurecontainerapps.io';
+            const botUrl = 'https://similar-bot-test-v2.wonderfulstone-4279f63d.eastus.azurecontainerapps.io';
             const context = github.context;
             if (!context.payload.issue) {
                 throw new Error("No issue found in the context payload. Please check your workflow trigger is 'issues'");
             }
             const issue = context.payload.issue;
             core.debug(`Issue: ${JSON.stringify(issue)}`);
-            core.debug(`Issue reactions: ${JSON.stringify(issue.reactions)}`);
             const { owner, repo } = context.repo;
             if (enable_similar_issues_scanning === 'true') {
                 yield handleSimilarIssuesScanning(issue, owner, repo, token, botUrl);
