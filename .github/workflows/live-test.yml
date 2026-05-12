@@ -1,0 +1,243 @@
+name: Live Test (Azure CLI PR)
+
+# Triggered remotely by the agent-assist Tester agent via:
+#   POST /repos/Azure/issue-sentinel/actions/workflows/live-test.yml/dispatches
+#
+# Runs `azdev test {module} --live --series` against an in-flight PR on
+# Azure/azure-cli using BAMI-tenant credentials (federated via OIDC), and
+# posts the result back as a PR comment.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number on Azure/azure-cli"
+        required: true
+        type: string
+      module:
+        description: "azdev module to test (e.g. acs, sql). Leave blank to auto-detect from changed files."
+        required: false
+        type: string
+        default: ""
+      repo:
+        description: "owner/repo of the PR"
+        required: false
+        type: string
+        default: "Azure/azure-cli"
+      post_comment:
+        description: "Post result back to the PR as a comment"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  id-token: write       # required for federated OIDC login to BAMI
+  contents: read
+  pull-requests: write  # required to comment back on the PR
+
+concurrency:
+  group: live-test-${{ inputs.repo }}-${{ inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  live-test:
+    name: azdev test --live (PR ${{ inputs.pr_number }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      PR_REPO: ${{ inputs.repo }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+      MODULE_INPUT: ${{ inputs.module }}
+
+    steps:
+      - name: Resolve PR head SHA
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.AZURE_CLI_RO_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          owner="${PR_REPO%/*}"
+          repo="${PR_REPO#*/}"
+          pr_json=$(gh api "repos/${owner}/${repo}/pulls/${PR_NUMBER}")
+          head_sha=$(echo "$pr_json" | jq -r .head.sha)
+          head_ref=$(echo "$pr_json" | jq -r .head.ref)
+          base_ref=$(echo "$pr_json" | jq -r .base.ref)
+          echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
+          echo "head_ref=${head_ref}" >> "$GITHUB_OUTPUT"
+          echo "base_ref=${base_ref}" >> "$GITHUB_OUTPUT"
+          echo "owner=${owner}"       >> "$GITHUB_OUTPUT"
+          echo "repo=${repo}"         >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Azure/azure-cli at PR head
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.pr.outputs.owner }}/${{ steps.pr.outputs.repo }}
+          ref: ${{ steps.pr.outputs.head_sha }}
+          fetch-depth: 0
+          path: azure-cli
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Detect module from changed files
+        id: detect
+        working-directory: azure-cli
+        run: |
+          set -euo pipefail
+          if [ -n "${MODULE_INPUT}" ]; then
+            echo "module=${MODULE_INPUT}" >> "$GITHUB_OUTPUT"
+            echo "Using explicit module: ${MODULE_INPUT}"
+            exit 0
+          fi
+          base="${{ steps.pr.outputs.base_ref }}"
+          git fetch origin "${base}" --depth=200 || true
+          changed=$(git diff --name-only "origin/${base}...HEAD" -- 'src/azure-cli/azure/cli/command_modules/*' 'src/azure-cli/azure/cli/command_modules/**')
+          # Pick the most-touched module
+          module=$(echo "$changed" \
+            | awk -F/ '/command_modules/ {print $5}' \
+            | sort | uniq -c | sort -rn | awk 'NR==1 {print $2}')
+          if [ -z "$module" ]; then
+            echo "::error::Could not auto-detect module from changed files"
+            exit 1
+          fi
+          echo "module=${module}" >> "$GITHUB_OUTPUT"
+          echo "Detected module: ${module}"
+
+      - name: Detect new live tests in PR
+        id: newtests
+        working-directory: azure-cli
+        run: |
+          set -euo pipefail
+          base="${{ steps.pr.outputs.base_ref }}"
+          new_tests=$(git diff --name-only --diff-filter=A "origin/${base}...HEAD" \
+            -- 'src/azure-cli/azure/cli/command_modules/*/tests/*' || true)
+          if [ -n "$new_tests" ]; then
+            echo "has_new_tests=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_new_tests=false" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "list<<EOF"
+            echo "$new_tests"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install azdev and Azure CLI from source
+        working-directory: azure-cli
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install azdev
+          azdev setup --cli .
+
+      - name: Azure login (BAMI tenant, federated OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.BAMI_CLIENT_ID }}
+          tenant-id:       ${{ secrets.BAMI_TENANT_ID }}
+          subscription-id: ${{ secrets.BAMI_SUBSCRIPTION_ID }}
+          allow-no-subscriptions: false
+
+      - name: Run azdev test (live, series)
+        id: test
+        working-directory: azure-cli
+        env:
+          MODULE: ${{ steps.detect.outputs.module }}
+        run: |
+          set -o pipefail
+          mkdir -p ../test-output
+          set +e
+          azdev test "$MODULE" --live --series \
+            --xml-path ../test-output/results.xml \
+            2>&1 | tee ../test-output/log.txt
+          rc=$?
+          set -e
+          echo "exit_code=${rc}" >> "$GITHUB_OUTPUT"
+          # Don't fail the step here — we always want to upload artifacts and post back.
+          exit 0
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-test-pr-${{ inputs.pr_number }}-${{ steps.detect.outputs.module }}
+          path: test-output/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Build PR comment body
+        if: always() && inputs.post_comment == true
+        id: body
+        env:
+          MODULE: ${{ steps.detect.outputs.module }}
+          EXIT_CODE: ${{ steps.test.outputs.exit_code }}
+          NEW_TESTS: ${{ steps.newtests.outputs.has_new_tests }}
+          NEW_TESTS_LIST: ${{ steps.newtests.outputs.list }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "${EXIT_CODE}" = "0" ]; then
+            status="✅ **PASS**"
+          else
+            status="❌ **FAIL** (exit ${EXIT_CODE})"
+          fi
+          tail_log=$(tail -n 80 test-output/log.txt 2>/dev/null || echo "(no log captured)")
+          {
+            echo "## Live test results — \`azdev test ${MODULE} --live --series\`"
+            echo
+            echo "${status}"
+            echo
+            echo "**Module:** \`${MODULE}\`"
+            echo "**New test files in PR:** ${NEW_TESTS}"
+            if [ "${NEW_TESTS}" = "true" ]; then
+              echo
+              echo "<details><summary>New test files</summary>"
+              echo
+              echo '```'
+              echo "${NEW_TESTS_LIST}"
+              echo '```'
+              echo
+              echo "</details>"
+            fi
+            echo
+            echo "**Workflow run:** ${RUN_URL}"
+            echo
+            echo "<details><summary>Last 80 lines of azdev output</summary>"
+            echo
+            echo '```'
+            echo "${tail_log}"
+            echo '```'
+            echo
+            echo "</details>"
+            echo
+            echo "_Posted by [agent-assist](https://github.com/Azure/issue-sentinel/blob/main/.github/workflows/live-test.yml) live-test workflow._"
+          } > comment.md
+          echo "path=comment.md" >> "$GITHUB_OUTPUT"
+
+      - name: Post comment back to PR
+        if: always() && inputs.post_comment == true
+        env:
+          GH_TOKEN: ${{ secrets.AZURE_CLI_RW_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh api -X POST \
+            "repos/${PR_REPO}/issues/${PR_NUMBER}/comments" \
+            -F body=@${{ steps.body.outputs.path }} >/dev/null
+          echo "Comment posted to ${PR_REPO}#${PR_NUMBER}"
+
+      - name: Set workflow conclusion
+        if: always()
+        env:
+          EXIT_CODE: ${{ steps.test.outputs.exit_code }}
+        run: |
+          if [ "${EXIT_CODE}" = "0" ]; then
+            echo "azdev tests passed."
+            exit 0
+          else
+            echo "azdev tests failed (exit ${EXIT_CODE})."
+            exit 1
+          fi
