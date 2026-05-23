@@ -134,7 +134,7 @@ jobs:
           source .venv/bin/activate
           python -m pip install --upgrade pip
           python -m pip install azdev
-          azdev setup -c azure-cli
+          azdev setup -c .
 
       - name: Azure login (BAMI tenant, federated OIDC)
         uses: azure/login@v2
