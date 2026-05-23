@@ -130,9 +130,11 @@ jobs:
         working-directory: azure-cli
         run: |
           set -euo pipefail
+          python -m venv .venv
+          source .venv/bin/activate
           python -m pip install --upgrade pip
           python -m pip install azdev
-          azdev setup --cli .
+          azdev setup -c azure-cli
 
       - name: Azure login (BAMI tenant, federated OIDC)
         uses: azure/login@v2
@@ -148,6 +150,7 @@ jobs:
         env:
           MODULE: ${{ steps.detect.outputs.module }}
         run: |
+          source .venv/bin/activate
           set -o pipefail
           mkdir -p ../test-output
           set +e
