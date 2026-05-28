@@ -1,4 +1,5 @@
 name: Live Test (Azure CLI PR)
+run-name: Live Test (PR ${{ inputs.pr_number }} @ ${{ inputs.pr_head_sha || 'auto' }})
 
 # Triggered remotely by the agent-assist Tester agent via:
 #   POST /repos/Azure/issue-sentinel/actions/workflows/live-test.yml/dispatches
@@ -24,6 +25,11 @@ on:
         required: false
         type: string
         default: "Azure/azure-cli"
+      pr_head_sha:
+        description: "PR head SHA observed by dispatcher (optional, for dedupe/traceability)"
+        required: false
+        type: string
+        default: ""
       post_comment:
         description: "Post result back to the PR as a comment"
         required: false
@@ -68,6 +74,14 @@ jobs:
           echo "base_ref=${base_ref}" >> "$GITHUB_OUTPUT"
           echo "owner=${owner}"       >> "$GITHUB_OUTPUT"
           echo "repo=${repo}"         >> "$GITHUB_OUTPUT"
+
+      - name: Log resolved PR refs
+        run: |
+          set -euo pipefail
+          echo "Resolved PR target: ${{ steps.pr.outputs.owner }}/${{ steps.pr.outputs.repo }}#${{ inputs.pr_number }}"
+          echo "PR head ref: ${{ steps.pr.outputs.head_ref }}"
+          echo "PR head sha: ${{ steps.pr.outputs.head_sha }}"
+          echo "PR base ref: ${{ steps.pr.outputs.base_ref }}"
 
       - name: Checkout Azure/azure-cli at PR head
         uses: actions/checkout@v4
@@ -180,6 +194,9 @@ jobs:
           EXIT_CODE: ${{ steps.test.outputs.exit_code }}
           NEW_TESTS: ${{ steps.newtests.outputs.has_new_tests }}
           NEW_TESTS_LIST: ${{ steps.newtests.outputs.list }}
+          PR_HEAD_REF: ${{ steps.pr.outputs.head_ref }}
+          PR_HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          PR_BASE_REF: ${{ steps.pr.outputs.base_ref }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -195,6 +212,9 @@ jobs:
             echo "${status}"
             echo
             echo "**Module:** \`${MODULE}\`"
+            echo "**PR head ref:** \`${PR_HEAD_REF}\`"
+            echo "**PR head sha:** \`${PR_HEAD_SHA}\`"
+            echo "**PR base ref:** \`${PR_BASE_REF}\`"
             echo "**New test files in PR:** ${NEW_TESTS}"
             if [ "${NEW_TESTS}" = "true" ]; then
               echo
