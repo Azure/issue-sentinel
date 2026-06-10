@@ -16,12 +16,20 @@ on:
         required: true
         type: string
       module:
-        description: "azdev module to test (e.g. acs, sql). Leave blank to auto-detect from changed files."
+        description: "azdev module or extension name to test (e.g. acs, costmanagement). Leave blank to auto-detect from changed files."
         required: false
         type: string
         default: ""
+      target_kind:
+        description: "Whether `module` names a core module or an azure-cli-extensions extension."
+        required: false
+        type: choice
+        options:
+          - module
+          - extension
+        default: module
       repo:
-        description: "owner/repo of the PR"
+        description: "owner/repo of the PR (Azure/azure-cli or Azure/azure-cli-extensions)"
         required: false
         type: string
         default: "Azure/azure-cli"
@@ -55,6 +63,7 @@ jobs:
       PR_REPO: ${{ inputs.repo }}
       PR_NUMBER: ${{ inputs.pr_number }}
       MODULE_INPUT: ${{ inputs.module }}
+      TARGET_KIND_INPUT: ${{ inputs.target_kind }}
 
     steps:
       - name: Resolve PR head SHA
@@ -83,13 +92,21 @@ jobs:
           echo "PR head sha: ${{ steps.pr.outputs.head_sha }}"
           echo "PR base ref: ${{ steps.pr.outputs.base_ref }}"
 
-      - name: Checkout Azure/azure-cli at PR head
+      - name: Checkout PR head
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.pr.outputs.owner }}/${{ steps.pr.outputs.repo }}
           ref: ${{ steps.pr.outputs.head_sha }}
           fetch-depth: 0
-          path: azure-cli
+          path: ${{ steps.pr.outputs.repo }}
+
+      - name: Checkout companion repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.pr.outputs.repo == 'azure-cli' && 'Azure/azure-cli-extensions' || 'Azure/azure-cli' }}
+          ref: ${{ steps.pr.outputs.repo == 'azure-cli' && 'main' || 'dev' }}
+          fetch-depth: 1
+          path: ${{ steps.pr.outputs.repo == 'azure-cli' && 'azure-cli-extensions' || 'azure-cli' }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -97,38 +114,72 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Detect module from changed files
+      - name: Resolve target (module or extension)
         id: detect
-        working-directory: azure-cli
+        env:
+          PR_REPO_NAME: ${{ steps.pr.outputs.repo }}
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
         run: |
           set -euo pipefail
-          if [ -n "${MODULE_INPUT}" ]; then
-            echo "module=${MODULE_INPUT}" >> "$GITHUB_OUTPUT"
-            echo "Using explicit module: ${MODULE_INPUT}"
-            exit 0
+          name="${MODULE_INPUT}"
+          if [ "$PR_REPO_NAME" = "azure-cli-extensions" ]; then
+            kind="extension"
+          else
+            kind="${TARGET_KIND_INPUT:-module}"
           fi
-          base="${{ steps.pr.outputs.base_ref }}"
-          git fetch origin "${base}" --depth=200 || true
-          changed=$(git diff --name-only "origin/${base}...HEAD" -- 'src/azure-cli/azure/cli/command_modules/*' 'src/azure-cli/azure/cli/command_modules/**')
-          # Pick the most-touched module
-          module=$(echo "$changed" \
-            | awk -F/ '/command_modules/ {print $5}' \
-            | sort | uniq -c | sort -rn | awk 'NR==1 {print $2}')
-          if [ -z "$module" ]; then
-            echo "::error::Could not auto-detect module from changed files"
+          if [ -z "${name}" ]; then
+            cd "$PR_REPO_NAME"
+            git fetch origin "${BASE_REF}" --depth=200 || true
+            changed=$(git diff --name-only "origin/${BASE_REF}...HEAD")
+            if [ "$PR_REPO_NAME" = "azure-cli-extensions" ]; then
+              name=$(echo "$changed" | awk -F/ '$1=="src" {print $2}' | sort | uniq -c | sort -rn | awk 'NR==1 {print $2}')
+            else
+              name=$(echo "$changed" | awk -F/ '/command_modules/ {print $5}' | sort | uniq -c | sort -rn | awk 'NR==1 {print $2}')
+            fi
+            cd ..
+          fi
+          if [ -z "$name" ]; then
+            echo "::error::Could not resolve target name from inputs or changed files"
             exit 1
           fi
-          echo "module=${module}" >> "$GITHUB_OUTPUT"
-          echo "Detected module: ${module}"
+          mod_dir="azure-cli/src/azure-cli/azure/cli/command_modules/${name}"
+          ext_dir="azure-cli-extensions/src/${name}"
+          if [ "$kind" = "module" ] && [ ! -d "$mod_dir" ] && [ -d "$ext_dir" ]; then
+            echo "Switching kind: '$name' is an extension, not a core module"
+            kind="extension"
+          elif [ "$kind" = "extension" ] && [ ! -d "$ext_dir" ] && [ -d "$mod_dir" ]; then
+            echo "Switching kind: '$name' is a core module, not an extension"
+            kind="module"
+          fi
+          if [ "$kind" = "module" ] && [ ! -d "$mod_dir" ]; then
+            echo "::error::Unknown core module '$name' (no $mod_dir and no $ext_dir)"
+            exit 1
+          fi
+          if [ "$kind" = "extension" ] && [ ! -d "$ext_dir" ]; then
+            echo "::error::Unknown extension '$name' (no $ext_dir and no $mod_dir)"
+            exit 1
+          fi
+          echo "module=${name}" >> "$GITHUB_OUTPUT"
+          echo "kind=${kind}" >> "$GITHUB_OUTPUT"
+          echo "Resolved target: ${name} (${kind})"
 
       - name: Detect new live tests in PR
         id: newtests
-        working-directory: azure-cli
+        env:
+          PR_REPO_NAME: ${{ steps.pr.outputs.repo }}
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
+          KIND: ${{ steps.detect.outputs.kind }}
+          NAME: ${{ steps.detect.outputs.module }}
         run: |
           set -euo pipefail
-          base="${{ steps.pr.outputs.base_ref }}"
-          new_tests=$(git diff --name-only --diff-filter=A "origin/${base}...HEAD" \
-            -- 'src/azure-cli/azure/cli/command_modules/*/tests/*' || true)
+          cd "$PR_REPO_NAME"
+          if [ "$KIND" = "extension" ]; then
+            new_tests=$(git diff --name-only --diff-filter=A "origin/${BASE_REF}...HEAD" \
+              -- "src/${NAME}/**/tests/*" || true)
+          else
+            new_tests=$(git diff --name-only --diff-filter=A "origin/${BASE_REF}...HEAD" \
+              -- 'src/azure-cli/azure/cli/command_modules/*/tests/*' || true)
+          fi
           if [ -n "$new_tests" ]; then
             echo "has_new_tests=true" >> "$GITHUB_OUTPUT"
           else
@@ -141,14 +192,20 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Install azdev and Azure CLI from source
-        working-directory: azure-cli
+        env:
+          KIND: ${{ steps.detect.outputs.kind }}
+          NAME: ${{ steps.detect.outputs.module }}
         run: |
           set -euo pipefail
           python -m venv .venv
           source .venv/bin/activate
           python -m pip install --upgrade pip
           python -m pip install azdev
-          azdev setup -c .
+          if [ "$KIND" = "extension" ]; then
+            azdev setup -c azure-cli -r azure-cli-extensions -e "$NAME"
+          else
+            azdev setup -c azure-cli
+          fi
 
       - name: Azure login (BAMI tenant, federated OIDC)
         uses: azure/login@v2
@@ -160,21 +217,29 @@ jobs:
 
       - name: Run azdev test (live, series)
         id: test
-        working-directory: azure-cli
         env:
           MODULE: ${{ steps.detect.outputs.module }}
+          KIND: ${{ steps.detect.outputs.kind }}
         run: |
           source .venv/bin/activate
           set -o pipefail
-          mkdir -p ../test-output
+          mkdir -p test-output
           set +e
           azdev test "$MODULE" --live --series \
-            --xml-path ../test-output/results.xml \
-            2>&1 | tee ../test-output/log.txt
+            --xml-path test-output/results.xml \
+            2>&1 | tee test-output/log.txt
           rc=$?
           set -e
+          ran=true
+          if [ ! -s test-output/results.xml ] || ! grep -q '<testcase' test-output/results.xml; then
+            ran=false
+            if [ "$rc" = "0" ]; then
+              echo "::error::azdev test '$MODULE' (${KIND}) selected 0 tests — target name is likely wrong."
+              rc=2
+            fi
+          fi
           echo "exit_code=${rc}" >> "$GITHUB_OUTPUT"
-          # Don't fail the step here — we always want to upload artifacts and post back.
+          echo "ran_tests=${ran}" >> "$GITHUB_OUTPUT"
           exit 0
 
       - name: Upload test artifacts
@@ -191,7 +256,9 @@ jobs:
         id: body
         env:
           MODULE: ${{ steps.detect.outputs.module }}
+          KIND: ${{ steps.detect.outputs.kind }}
           EXIT_CODE: ${{ steps.test.outputs.exit_code }}
+          RAN_TESTS: ${{ steps.test.outputs.ran_tests }}
           NEW_TESTS: ${{ steps.newtests.outputs.has_new_tests }}
           NEW_TESTS_LIST: ${{ steps.newtests.outputs.list }}
           PR_HEAD_REF: ${{ steps.pr.outputs.head_ref }}
@@ -202,6 +269,8 @@ jobs:
           set -euo pipefail
           if [ "${EXIT_CODE}" = "0" ]; then
             status="✅ **PASS**"
+          elif [ "${RAN_TESTS}" = "false" ]; then
+            status="❌ **FAIL** — no tests selected for \`${MODULE}\` (${KIND})"
           else
             status="❌ **FAIL** (exit ${EXIT_CODE})"
           fi
@@ -211,7 +280,7 @@ jobs:
             echo
             echo "${status}"
             echo
-            echo "**Module:** \`${MODULE}\`"
+            echo "**Target:** \`${MODULE}\` (${KIND})"
             echo "**PR head ref:** \`${PR_HEAD_REF}\`"
             echo "**PR head sha:** \`${PR_HEAD_SHA}\`"
             echo "**PR base ref:** \`${PR_BASE_REF}\`"
