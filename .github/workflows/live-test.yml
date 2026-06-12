@@ -66,10 +66,36 @@ jobs:
       TARGET_KIND_INPUT: ${{ inputs.target_kind }}
 
     steps:
+      - name: Azure login (SDK Infrastructure, federated OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURESDK_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURESDK_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURESDK_SUBSCRIPTION_ID }}
+
+      - name: Fetch PAT from Key Vault
+        id: kv
+        run: |
+          set -euo pipefail
+          pat=$(az keyvault secret show \
+            --vault-name kv-azuresdk \
+            --name azclibot-pat \
+            --query value -o tsv)
+          echo "::add-mask::${pat}"
+          echo "pat=${pat}" >> "$GITHUB_OUTPUT"
+
+      - name: Azure login (BAMI tenant, federated OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.BAMI_CLIENT_ID }}
+          tenant-id:       ${{ secrets.BAMI_TENANT_ID }}
+          subscription-id: ${{ secrets.BAMI_SUBSCRIPTION_ID }}
+          allow-no-subscriptions: false
+
       - name: Resolve PR head SHA
         id: pr
         env:
-          GH_TOKEN: ${{ secrets.AZURE_CLI_RO_TOKEN || github.token }}
+          GH_TOKEN: ${{ steps.kv.outputs.pat }}
         run: |
           set -euo pipefail
           owner="${PR_REPO%/*}"
@@ -207,14 +233,6 @@ jobs:
             azdev setup -c azure-cli
           fi
 
-      - name: Azure login (BAMI tenant, federated OIDC)
-        uses: azure/login@v2
-        with:
-          client-id:       ${{ secrets.BAMI_CLIENT_ID }}
-          tenant-id:       ${{ secrets.BAMI_TENANT_ID }}
-          subscription-id: ${{ secrets.BAMI_SUBSCRIPTION_ID }}
-          allow-no-subscriptions: false
-
       - name: Run azdev test (live, series)
         id: test
         env:
@@ -313,7 +331,7 @@ jobs:
       - name: Post comment back to PR
         if: always() && inputs.post_comment == true
         env:
-          GH_TOKEN: ${{ secrets.AZURE_CLI_RW_TOKEN }}
+          GH_TOKEN: ${{ steps.kv.outputs.pat }}
         run: |
           set -euo pipefail
           gh api -X POST \
