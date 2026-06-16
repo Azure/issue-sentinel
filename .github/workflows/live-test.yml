@@ -78,7 +78,7 @@ jobs:
         run: |
           set -euo pipefail
           pat=$(az keyvault secret show \
-            --vault-name kv-azuresdk \
+            --vault-name azclibotfinegrainedpat \
             --name azclibot-pat \
             --query value -o tsv)
           echo "::add-mask::${pat}"
