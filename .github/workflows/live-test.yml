@@ -16,12 +16,12 @@ on:
         required: true
         type: string
       module:
-        description: "azdev module or extension name to test (e.g. acs, costmanagement). Leave blank to auto-detect from changed files."
+        description: "Optional advisory module/extension name (no longer used for selection; tests are derived from changed test files). Kept for backward compatibility."
         required: false
         type: string
         default: ""
       target_kind:
-        description: "Whether `module` names a core module or an azure-cli-extensions extension."
+        description: "Whether the PR targets a core module or an azure-cli-extensions extension (used only to decide azdev setup flags)."
         required: false
         type: choice
         options:
@@ -62,8 +62,6 @@ jobs:
     env:
       PR_REPO: ${{ inputs.repo }}
       PR_NUMBER: ${{ inputs.pr_number }}
-      MODULE_INPUT: ${{ inputs.module }}
-      TARGET_KIND_INPUT: ${{ inputs.target_kind }}
 
     steps:
       - name: Azure login (SDK Infrastructure, federated OIDC)
@@ -140,126 +138,104 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Resolve target (module or extension)
+      - name: Resolve changed test files
         id: detect
         env:
           PR_REPO_NAME: ${{ steps.pr.outputs.repo }}
           BASE_REF: ${{ steps.pr.outputs.base_ref }}
         run: |
           set -euo pipefail
-          name="${MODULE_INPUT}"
+          cd "$PR_REPO_NAME"
+          git fetch origin "${BASE_REF}" --depth=200 || true
+
+          # All changed test files in the PR (added / copied / modified / renamed).
+          # A "test file" is a test_*.py living under a tests/ directory.
+          changed=$(git diff --name-only --diff-filter=ACMR "origin/${BASE_REF}...HEAD" || true)
+          test_files=$(echo "$changed" | grep -E '(^|/)tests/.*/?test_[^/]*\.py$' || true)
+
+          # Only files that still exist on the PR head (a renamed-away path won't).
+          existing=""
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            [ -f "$f" ] && existing="${existing}${f}"$'\n'
+          done <<< "$test_files"
+          test_files="$existing"
+
+          # Unique pytest selectors: bare test-file stems (azdev matches on filename).
+          stems=$(echo "$test_files" | sed '/^$/d' | xargs -n1 basename 2>/dev/null \
+            | sed 's/\.py$//' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+
+          # Newly-added test files (for reporting).
+          new_files=$(git diff --name-only --diff-filter=A "origin/${BASE_REF}...HEAD" \
+            | grep -E '(^|/)tests/.*/?test_[^/]*\.py$' || true)
+
+          # Decide azdev setup flags. Extensions must be installed by name so azdev
+          # can discover their tests; core modules are all available after a plain setup.
           if [ "$PR_REPO_NAME" = "azure-cli-extensions" ]; then
             kind="extension"
+            ext=$(echo "$test_files" | awk -F/ '$1=="src"{print $2}' | sort -u | head -1)
           else
-            kind="${TARGET_KIND_INPUT:-module}"
-          fi
-          if [ -z "${name}" ]; then
-            cd "$PR_REPO_NAME"
-            git fetch origin "${BASE_REF}" --depth=200 || true
-            changed=$(git diff --name-only "origin/${BASE_REF}...HEAD")
-            if [ "$PR_REPO_NAME" = "azure-cli-extensions" ]; then
-              name=$(echo "$changed" | awk -F/ '$1=="src" {print $2}' | sort | uniq -c | sort -rn | awk 'NR==1 {print $2}')
-            else
-              name=$(echo "$changed" | awk -F/ '/command_modules/ {print $5}' | sort | uniq -c | sort -rn | awk 'NR==1 {print $2}')
-            fi
-            cd ..
-          fi
-          if [ -z "$name" ]; then
-            # The PR touches no command module / extension (e.g. a pure
-            # azure-cli-core, build-script, or docs change). There is nothing to
-            # live-test, so SKIP with a neutral result instead of failing.
-            echo "::notice::No testable module/extension in changed files — skipping live test (neutral)."
-            echo "skipped=true" >> "$GITHUB_OUTPUT"
-            echo "module=" >> "$GITHUB_OUTPUT"
-            echo "kind=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          mod_dir="azure-cli/src/azure-cli/azure/cli/command_modules/${name}"
-          ext_dir="azure-cli-extensions/src/${name}"
-          if [ "$kind" = "module" ] && [ ! -d "$mod_dir" ] && [ -d "$ext_dir" ]; then
-            echo "Switching kind: '$name' is an extension, not a core module"
-            kind="extension"
-          elif [ "$kind" = "extension" ] && [ ! -d "$ext_dir" ] && [ -d "$mod_dir" ]; then
-            echo "Switching kind: '$name' is a core module, not an extension"
             kind="module"
+            ext=""
           fi
-          if [ "$kind" = "module" ] && [ ! -d "$mod_dir" ]; then
-            echo "::notice::Unknown core module '$name' (no $mod_dir and no $ext_dir) — skipping live test (neutral)."
-            echo "skipped=true" >> "$GITHUB_OUTPUT"
-            echo "module=" >> "$GITHUB_OUTPUT"
-            echo "kind=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ "$kind" = "extension" ] && [ ! -d "$ext_dir" ]; then
-            echo "::notice::Unknown extension '$name' (no $ext_dir and no $mod_dir) — skipping live test (neutral)."
-            echo "skipped=true" >> "$GITHUB_OUTPUT"
-            echo "module=" >> "$GITHUB_OUTPUT"
-            echo "kind=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "skipped=false" >> "$GITHUB_OUTPUT"
-          echo "module=${name}" >> "$GITHUB_OUTPUT"
-          echo "kind=${kind}" >> "$GITHUB_OUTPUT"
-          echo "Resolved target: ${name} (${kind})"
 
-      - name: Detect new live tests in PR
-        id: newtests
-        if: steps.detect.outputs.skipped != 'true'
-        env:
-          PR_REPO_NAME: ${{ steps.pr.outputs.repo }}
-          BASE_REF: ${{ steps.pr.outputs.base_ref }}
-          KIND: ${{ steps.detect.outputs.kind }}
-          NAME: ${{ steps.detect.outputs.module }}
-        run: |
-          set -euo pipefail
-          cd "$PR_REPO_NAME"
-          if [ "$KIND" = "extension" ]; then
-            new_tests=$(git diff --name-only --diff-filter=A "origin/${BASE_REF}...HEAD" \
-              -- "src/${NAME}/**/tests/*" || true)
+          if [ -z "$stems" ]; then
+            echo "has_tests=false" >> "$GITHUB_OUTPUT"
+            echo "No changed test files detected — nothing to live-test."
           else
-            new_tests=$(git diff --name-only --diff-filter=A "origin/${BASE_REF}...HEAD" \
-              -- 'src/azure-cli/azure/cli/command_modules/*/tests/*' || true)
+            echo "has_tests=true" >> "$GITHUB_OUTPUT"
+            echo "Changed test files:"
+            echo "$test_files"
+            echo "Selectors: $stems"
           fi
-          if [ -n "$new_tests" ]; then
+          echo "kind=${kind}" >> "$GITHUB_OUTPUT"
+          echo "ext=${ext}" >> "$GITHUB_OUTPUT"
+          echo "stems=${stems}" >> "$GITHUB_OUTPUT"
+          if [ -n "$new_files" ]; then
             echo "has_new_tests=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_new_tests=false" >> "$GITHUB_OUTPUT"
           fi
           {
-            echo "list<<EOF"
-            echo "$new_tests"
+            echo "new_list<<EOF"
+            echo "$new_files"
+            echo "EOF"
+            echo "files_list<<EOF"
+            echo "$test_files"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Install azdev and Azure CLI from source
-        if: steps.detect.outputs.skipped != 'true'
+        if: steps.detect.outputs.has_tests == 'true'
         env:
           KIND: ${{ steps.detect.outputs.kind }}
-          NAME: ${{ steps.detect.outputs.module }}
+          EXT: ${{ steps.detect.outputs.ext }}
         run: |
           set -euo pipefail
           python -m venv .venv
           source .venv/bin/activate
           python -m pip install --upgrade pip
           python -m pip install azdev
-          if [ "$KIND" = "extension" ]; then
-            azdev setup -c azure-cli -r azure-cli-extensions -e "$NAME"
+          if [ "$KIND" = "extension" ] && [ -n "$EXT" ]; then
+            azdev setup -c azure-cli -r azure-cli-extensions -e "$EXT"
           else
             azdev setup -c azure-cli
           fi
 
-      - name: Run azdev test (live, series)
+      - name: Run azdev test (live, series) — changed test files only
         id: test
-        if: steps.detect.outputs.skipped != 'true'
+        if: steps.detect.outputs.has_tests == 'true'
         env:
-          MODULE: ${{ steps.detect.outputs.module }}
+          STEMS: ${{ steps.detect.outputs.stems }}
           KIND: ${{ steps.detect.outputs.kind }}
         run: |
           source .venv/bin/activate
           set -o pipefail
           mkdir -p test-output
+          # Build a fresh discovery index so bare test-file stems resolve, then run
+          # only the changed test files live.
           set +e
-          azdev test "$MODULE" --live --series \
+          azdev test $STEMS --live --series --discover \
             --xml-path test-output/results.xml \
             2>&1 | tee test-output/log.txt
           rc=$?
@@ -268,7 +244,7 @@ jobs:
           if [ ! -s test-output/results.xml ] || ! grep -q '<testcase' test-output/results.xml; then
             ran=false
             if [ "$rc" = "0" ]; then
-              echo "::error::azdev test '$MODULE' (${KIND}) selected 0 tests — target name is likely wrong."
+              echo "::error::azdev selected 0 tests from changed files [$STEMS] — discovery may have failed (new file not indexed, or extension not installed)."
               rc=2
             fi
           fi
@@ -277,10 +253,10 @@ jobs:
           exit 0
 
       - name: Upload test artifacts
-        if: always() && steps.detect.outputs.skipped != 'true'
+        if: always() && steps.detect.outputs.has_tests == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: live-test-pr-${{ inputs.pr_number }}-${{ steps.detect.outputs.module }}
+          name: live-test-pr-${{ inputs.pr_number }}
           path: test-output/
           if-no-files-found: warn
           retention-days: 14
@@ -289,24 +265,25 @@ jobs:
         if: always() && inputs.post_comment == true
         id: body
         env:
-          MODULE: ${{ steps.detect.outputs.module }}
+          HAS_TESTS: ${{ steps.detect.outputs.has_tests }}
+          STEMS: ${{ steps.detect.outputs.stems }}
           KIND: ${{ steps.detect.outputs.kind }}
           EXIT_CODE: ${{ steps.test.outputs.exit_code }}
           RAN_TESTS: ${{ steps.test.outputs.ran_tests }}
-          NEW_TESTS: ${{ steps.newtests.outputs.has_new_tests }}
-          NEW_TESTS_LIST: ${{ steps.newtests.outputs.list }}
+          NEW_TESTS: ${{ steps.detect.outputs.has_new_tests }}
+          NEW_TESTS_LIST: ${{ steps.detect.outputs.new_list }}
+          CHANGED_TESTS_LIST: ${{ steps.detect.outputs.files_list }}
           PR_HEAD_REF: ${{ steps.pr.outputs.head_ref }}
           PR_HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           PR_BASE_REF: ${{ steps.pr.outputs.base_ref }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          SKIPPED="${{ steps.detect.outputs.skipped }}"
-          if [ "${SKIPPED}" = "true" ]; then
+          if [ "${HAS_TESTS}" != "true" ]; then
             {
-              echo "## Live test — skipped (neutral)"
+              echo "## Live test results — changed test files only"
               echo
-              echo "⏭️ **SKIPPED** — this PR's changed files touch no testable command module or extension (e.g. a pure \`azure-cli-core\`, build-script, or docs change), so there is nothing to live-test."
+              echo "⏭️ **SKIPPED** — this PR changes no test files (\`tests/**/test_*.py\`), so there is nothing to live-test."
               echo
               echo "**PR head ref:** \`${PR_HEAD_REF}\`"
               echo "**PR head sha:** \`${PR_HEAD_SHA}\`"
@@ -322,21 +299,29 @@ jobs:
           if [ "${EXIT_CODE}" = "0" ]; then
             status="✅ **PASS**"
           elif [ "${RAN_TESTS}" = "false" ]; then
-            status="❌ **FAIL** — no tests selected for \`${MODULE}\` (${KIND})"
+            status="⚠️ **NO TESTS SELECTED** — changed test files did not resolve to runnable tests"
           else
             status="❌ **FAIL** (exit ${EXIT_CODE})"
           fi
           tail_log=$(tail -n 80 test-output/log.txt 2>/dev/null || echo "(no log captured)")
           {
-            echo "## Live test results — \`azdev test ${MODULE} --live --series\`"
+            echo "## Live test results — \`azdev test --live --series\` (changed test files only)"
             echo
             echo "${status}"
             echo
-            echo "**Target:** \`${MODULE}\` (${KIND})"
+            echo "**Selectors:** \`${STEMS}\` (${KIND})"
             echo "**PR head ref:** \`${PR_HEAD_REF}\`"
             echo "**PR head sha:** \`${PR_HEAD_SHA}\`"
             echo "**PR base ref:** \`${PR_BASE_REF}\`"
             echo "**New test files in PR:** ${NEW_TESTS}"
+            echo
+            echo "<details><summary>Changed test files run</summary>"
+            echo
+            echo '```'
+            echo "${CHANGED_TESTS_LIST}"
+            echo '```'
+            echo
+            echo "</details>"
             if [ "${NEW_TESTS}" = "true" ]; then
               echo
               echo "<details><summary>New test files</summary>"
@@ -376,11 +361,11 @@ jobs:
       - name: Set workflow conclusion
         if: always()
         env:
+          HAS_TESTS: ${{ steps.detect.outputs.has_tests }}
           EXIT_CODE: ${{ steps.test.outputs.exit_code }}
-          SKIPPED: ${{ steps.detect.outputs.skipped }}
         run: |
-          if [ "${SKIPPED}" = "true" ]; then
-            echo "Live test skipped (no testable module/extension) — neutral success."
+          if [ "${HAS_TESTS}" != "true" ]; then
+            echo "No changed test files — skipping live test (neutral)."
             exit 0
           fi
           if [ "${EXIT_CODE}" = "0" ]; then
