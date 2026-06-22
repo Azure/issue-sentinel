@@ -165,8 +165,14 @@ jobs:
             cd ..
           fi
           if [ -z "$name" ]; then
-            echo "::error::Could not resolve target name from inputs or changed files"
-            exit 1
+            # The PR touches no command module / extension (e.g. a pure
+            # azure-cli-core, build-script, or docs change). There is nothing to
+            # live-test, so SKIP with a neutral result instead of failing.
+            echo "::notice::No testable module/extension in changed files — skipping live test (neutral)."
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            echo "module=" >> "$GITHUB_OUTPUT"
+            echo "kind=" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           mod_dir="azure-cli/src/azure-cli/azure/cli/command_modules/${name}"
           ext_dir="azure-cli-extensions/src/${name}"
@@ -178,19 +184,27 @@ jobs:
             kind="module"
           fi
           if [ "$kind" = "module" ] && [ ! -d "$mod_dir" ]; then
-            echo "::error::Unknown core module '$name' (no $mod_dir and no $ext_dir)"
-            exit 1
+            echo "::notice::Unknown core module '$name' (no $mod_dir and no $ext_dir) — skipping live test (neutral)."
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            echo "module=" >> "$GITHUB_OUTPUT"
+            echo "kind=" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           if [ "$kind" = "extension" ] && [ ! -d "$ext_dir" ]; then
-            echo "::error::Unknown extension '$name' (no $ext_dir and no $mod_dir)"
-            exit 1
+            echo "::notice::Unknown extension '$name' (no $ext_dir and no $mod_dir) — skipping live test (neutral)."
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            echo "module=" >> "$GITHUB_OUTPUT"
+            echo "kind=" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
           echo "module=${name}" >> "$GITHUB_OUTPUT"
           echo "kind=${kind}" >> "$GITHUB_OUTPUT"
           echo "Resolved target: ${name} (${kind})"
 
       - name: Detect new live tests in PR
         id: newtests
+        if: steps.detect.outputs.skipped != 'true'
         env:
           PR_REPO_NAME: ${{ steps.pr.outputs.repo }}
           BASE_REF: ${{ steps.pr.outputs.base_ref }}
@@ -218,6 +232,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Install azdev and Azure CLI from source
+        if: steps.detect.outputs.skipped != 'true'
         env:
           KIND: ${{ steps.detect.outputs.kind }}
           NAME: ${{ steps.detect.outputs.module }}
@@ -235,6 +250,7 @@ jobs:
 
       - name: Run azdev test (live, series)
         id: test
+        if: steps.detect.outputs.skipped != 'true'
         env:
           MODULE: ${{ steps.detect.outputs.module }}
           KIND: ${{ steps.detect.outputs.kind }}
@@ -261,7 +277,7 @@ jobs:
           exit 0
 
       - name: Upload test artifacts
-        if: always()
+        if: always() && steps.detect.outputs.skipped != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: live-test-pr-${{ inputs.pr_number }}-${{ steps.detect.outputs.module }}
@@ -285,6 +301,24 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          SKIPPED="${{ steps.detect.outputs.skipped }}"
+          if [ "${SKIPPED}" = "true" ]; then
+            {
+              echo "## Live test — skipped (neutral)"
+              echo
+              echo "⏭️ **SKIPPED** — this PR's changed files touch no testable command module or extension (e.g. a pure \`azure-cli-core\`, build-script, or docs change), so there is nothing to live-test."
+              echo
+              echo "**PR head ref:** \`${PR_HEAD_REF}\`"
+              echo "**PR head sha:** \`${PR_HEAD_SHA}\`"
+              echo "**PR base ref:** \`${PR_BASE_REF}\`"
+              echo
+              echo "**Workflow run:** ${RUN_URL}"
+              echo
+              echo "_Posted by [agent-assist](https://github.com/Azure/issue-sentinel/blob/main/.github/workflows/live-test.yml) live-test workflow._"
+            } > comment.md
+            echo "path=comment.md" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "${EXIT_CODE}" = "0" ]; then
             status="✅ **PASS**"
           elif [ "${RAN_TESTS}" = "false" ]; then
@@ -343,7 +377,12 @@ jobs:
         if: always()
         env:
           EXIT_CODE: ${{ steps.test.outputs.exit_code }}
+          SKIPPED: ${{ steps.detect.outputs.skipped }}
         run: |
+          if [ "${SKIPPED}" = "true" ]; then
+            echo "Live test skipped (no testable module/extension) — neutral success."
+            exit 0
+          fi
           if [ "${EXIT_CODE}" = "0" ]; then
             echo "azdev tests passed."
             exit 0
