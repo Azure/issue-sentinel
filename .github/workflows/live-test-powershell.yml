@@ -83,7 +83,11 @@ jobs:
       - name: Resolve PR head SHA
         id: pr
         env:
-          GH_TOKEN: ${{ steps.kv.outputs.pat }}
+          # Public PR read — use the ambient workflow token (a short-lived
+          # installation token). The bot PAT from Key Vault is only needed for
+          # the cross-repo comment WRITE below, and is subject to the org's
+          # classic-PAT lifetime policy, so we avoid it for reads.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           owner="${PR_REPO%/*}"
