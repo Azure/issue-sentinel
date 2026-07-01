@@ -1,0 +1,362 @@
+name: Live Test (Azure PowerShell PR)
+run-name: Live Test (PR ${{ inputs.pr_number }} @ ${{ inputs.pr_head_sha || 'auto' }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number on Azure/azure-powershell"
+        required: true
+        type: string
+      module:
+        description: "Optional advisory module/service name (tests are derived from changed <Service>.Test files; kept for parity/traceability)."
+        required: false
+        type: string
+        default: ""
+      target_kind:
+        description: "Kept for parity with the CLI workflow (always 'psmodule' here)."
+        required: false
+        type: string
+        default: "psmodule"
+      repo:
+        description: "owner/repo of the PR (Azure/azure-powershell)"
+        required: false
+        type: string
+        default: "Azure/azure-powershell"
+      pr_head_sha:
+        description: "PR head SHA observed by dispatcher (optional, for dedupe/traceability)"
+        required: false
+        type: string
+        default: ""
+      post_comment:
+        description: "Post result back to the PR as a comment"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: live-test-ps-${{ inputs.repo }}-${{ inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  live-test:
+    name: TestFx Record (PR ${{ inputs.pr_number }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      PR_REPO: ${{ inputs.repo }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+
+    steps:
+      - name: Azure login (SDK Infrastructure, federated OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURESDK_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURESDK_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURESDK_SUBSCRIPTION_ID }}
+
+      - name: Fetch bot PAT from Key Vault
+        id: kv
+        run: |
+          set -euo pipefail
+          pat=$(az keyvault secret show \
+            --vault-name azclibotfinegrainedpat \
+            --name azclibot-pat \
+            --query value -o tsv)
+          echo "::add-mask::${pat}"
+          echo "pat=${pat}" >> "$GITHUB_OUTPUT"
+
+      - name: Azure login (BAMI tenant, federated OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.BAMI_CLIENT_ID }}
+          tenant-id:       ${{ secrets.BAMI_TENANT_ID }}
+          subscription-id: ${{ secrets.BAMI_SUBSCRIPTION_ID }}
+          allow-no-subscriptions: false
+
+      - name: Resolve PR head SHA
+        id: pr
+        env:
+          GH_TOKEN: ${{ steps.kv.outputs.pat }}
+        run: |
+          set -euo pipefail
+          owner="${PR_REPO%/*}"
+          repo="${PR_REPO#*/}"
+          pr_json=$(gh api "repos/${owner}/${repo}/pulls/${PR_NUMBER}")
+          echo "head_sha=$(echo "$pr_json" | jq -r .head.sha)" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$(echo "$pr_json" | jq -r .head.ref)" >> "$GITHUB_OUTPUT"
+          echo "base_ref=$(echo "$pr_json" | jq -r .base.ref)" >> "$GITHUB_OUTPUT"
+          echo "owner=${owner}" >> "$GITHUB_OUTPUT"
+          echo "repo=${repo}"   >> "$GITHUB_OUTPUT"
+
+      - name: Log resolved PR refs
+        run: |
+          echo "Resolved PR target: ${{ steps.pr.outputs.owner }}/${{ steps.pr.outputs.repo }}#${{ inputs.pr_number }}"
+          echo "PR head ref: ${{ steps.pr.outputs.head_ref }}"
+          echo "PR head sha: ${{ steps.pr.outputs.head_sha }}"
+          echo "PR base ref: ${{ steps.pr.outputs.base_ref }}"
+
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.pr.outputs.owner }}/${{ steps.pr.outputs.repo }}
+          ref: ${{ steps.pr.outputs.head_sha }}
+          fetch-depth: 0
+          path: azure-powershell
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            6.0.x
+            8.0.x
+
+      - name: Resolve changed test files (scope)
+        id: detect
+        env:
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
+        run: |
+          set -euo pipefail
+          cd azure-powershell
+          git fetch origin "${BASE_REF}" --depth=200 || true
+
+          # A "test file" is a .cs / .ps1 living under a <Service>.Test project.
+          changed=$(git diff --name-only --diff-filter=ACMR "origin/${BASE_REF}...HEAD" || true)
+          test_files=$(echo "$changed" | grep -E '(^|/)src/[^/]+/[^/]+\.Test/.*\.(cs|ps1)$' || true)
+
+          # Only files that still exist on the PR head.
+          existing=""
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            [ -f "$f" ] && existing="${existing}${f}"$'\n'
+          done <<< "$test_files"
+          test_files="$existing"
+
+          if [ -z "$(echo "$test_files" | sed '/^$/d')" ]; then
+            echo "has_tests=false" >> "$GITHUB_OUTPUT"
+            echo "No changed <Service>.Test files — nothing to live-test."
+            echo "projects=" >> "$GITHUB_OUTPUT"
+            echo "filter=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "has_tests=true" >> "$GITHUB_OUTPUT"
+
+          # Affected TEST PROJECT dir(s): the exact `src/<Service>/<Name>.Test`
+          # directory each changed test file lives in. A single service (e.g.
+          # Accounts) can contain several test projects (Accounts.Test,
+          # AssemblyLoading.Test, Authentication.Test), so we must key on the
+          # project dir — NOT the service dir — or we'd build/test the wrong one.
+          projects=$(echo "$test_files" | sed -E 's#^(src/[^/]+/[^/]+\.Test)/.*#\1#' | sort -u)
+          projects_line=$(echo "$projects" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+
+          # Test selectors: bare file stems (xUnit class ~ file name;
+          # scenario .ps1 stem ~ test method). Used with dotnet --filter.
+          stems=$(echo "$test_files" | sed '/^$/d' | xargs -n1 basename 2>/dev/null \
+            | sed -E 's/\.(cs|ps1)$//' | sort -u)
+          # Build an OR filter: FullyQualifiedName~Stem1|FullyQualifiedName~Stem2
+          filter=$(echo "$stems" | sed '/^$/d' | sed 's/^/FullyQualifiedName~/' | paste -sd'|' -)
+
+          echo "Changed test files:"; echo "$test_files"
+          echo "Test projects: $projects_line"
+          echo "Filter: $filter"
+          echo "projects=${projects_line}" >> "$GITHUB_OUTPUT"
+          echo "filter=${filter}" >> "$GITHUB_OUTPUT"
+          {
+            echo "files_list<<EOF"; echo "$test_files"; echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build changed test project(s)
+        if: steps.detect.outputs.has_tests == 'true'
+        working-directory: azure-powershell
+        env:
+          PROJECTS: ${{ steps.detect.outputs.projects }}
+        run: |
+          set -euo pipefail
+          # Scope the build to just the changed test project(s). Building the
+          # whole repo is prohibitively slow; each test project pulls in its own
+          # module as a dependency.
+          for pdir in $PROJECTS; do
+            proj=$(find "$pdir" -maxdepth 1 -iname "*.csproj" | head -1 || true)
+            if [ -z "$proj" ]; then
+              echo "::warning::No .csproj found in ${pdir}; skipping build for it."
+              continue
+            fi
+            echo "Building $proj"
+            dotnet build "$proj" -c Debug --nologo
+          done
+
+      - name: Run TestFx (Record / live) — changed tests only
+        id: test
+        if: steps.detect.outputs.has_tests == 'true'
+        working-directory: azure-powershell
+        env:
+          PROJECTS: ${{ steps.detect.outputs.projects }}
+          FILTER: ${{ steps.detect.outputs.filter }}
+          AZURE_TEST_MODE: Record
+          BAMI_SUBSCRIPTION_ID: ${{ secrets.BAMI_SUBSCRIPTION_ID }}
+          BAMI_TENANT_ID: ${{ secrets.BAMI_TENANT_ID }}
+        run: |
+          set -o pipefail
+          # ARM token from the ambient BAMI federated login (masked in logs).
+          arm_token=$(az account get-access-token \
+            --resource https://management.azure.com/ \
+            --query accessToken -o tsv)
+          echo "::add-mask::${arm_token}"
+          export TEST_CSM_ORGID_AUTHENTICATION="Environment=Prod;SubscriptionId=${BAMI_SUBSCRIPTION_ID};TenantId=${BAMI_TENANT_ID};RawToken=${arm_token};RawTokenType=Bearer;HttpRecorderMode=Record;"
+          mkdir -p ../test-output
+          rc=0
+          ran=false
+          for pdir in $PROJECTS; do
+            proj=$(find "$pdir" -maxdepth 1 -iname "*.csproj" | head -1 || true)
+            [ -z "$proj" ] && continue
+            label=$(basename "$pdir")
+            echo "::group::dotnet test $proj (filter: ${FILTER:-<none>})"
+            set +e
+            dotnet test "$proj" -c Debug --no-build \
+              ${FILTER:+--filter "$FILTER"} \
+              --logger "trx;LogFileName=${label}.trx" \
+              --results-directory ../test-output \
+              2>&1 | tee -a ../test-output/log.txt
+            code=$?
+            set -e
+            echo "::endgroup::"
+            [ "$code" != "0" ] && rc=$code
+            ran=true
+          done
+          # If dotnet selected 0 tests, the changed test stems didn't resolve to
+          # runnable tests (e.g. only a .ps1 recording changed). Treat as a
+          # no-tests-selected signal rather than a pass.
+          selected=true
+          if ! ls ../test-output/*.trx >/dev/null 2>&1; then
+            selected=false
+          elif ! grep -qiE '<UnitTestResult' ../test-output/*.trx 2>/dev/null; then
+            selected=false
+          fi
+          echo "exit_code=${rc}" >> "$GITHUB_OUTPUT"
+          echo "ran_tests=${ran}" >> "$GITHUB_OUTPUT"
+          echo "selected=${selected}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload test artifacts
+        if: always() && steps.detect.outputs.has_tests == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-test-ps-pr-${{ inputs.pr_number }}
+          path: test-output/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Build PR comment body
+        if: always() && inputs.post_comment == true
+        id: body
+        env:
+          HAS_TESTS: ${{ steps.detect.outputs.has_tests }}
+          PROJECTS: ${{ steps.detect.outputs.projects }}
+          FILTER: ${{ steps.detect.outputs.filter }}
+          EXIT_CODE: ${{ steps.test.outputs.exit_code }}
+          RAN_TESTS: ${{ steps.test.outputs.ran_tests }}
+          SELECTED: ${{ steps.test.outputs.selected }}
+          CHANGED_TESTS_LIST: ${{ steps.detect.outputs.files_list }}
+          PR_HEAD_REF: ${{ steps.pr.outputs.head_ref }}
+          PR_HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          PR_BASE_REF: ${{ steps.pr.outputs.base_ref }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "${HAS_TESTS}" != "true" ]; then
+            {
+              echo "## Live test results — changed test files only"
+              echo
+              echo "⏭️ **SKIPPED** — this PR changes no test files under a \`<Service>.Test\` project (\`src/<Service>/<Service>.Test/**/*.cs|*.ps1\`), so there is nothing to live-test."
+              echo
+              echo "**PR head ref:** \`${PR_HEAD_REF}\`"
+              echo "**PR head sha:** \`${PR_HEAD_SHA}\`"
+              echo "**PR base ref:** \`${PR_BASE_REF}\`"
+              echo
+              echo "**Workflow run:** ${RUN_URL}"
+              echo
+              echo "_Posted by [agent-assist](https://github.com/Azure/issue-sentinel/blob/main/.github/workflows/live-test-powershell.yml) PowerShell live-test workflow._"
+            } > comment.md
+            echo "path=comment.md" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${SELECTED}" = "false" ]; then
+            status="⚠️ **NO TESTS SELECTED** — changed test files did not resolve to runnable TestFx tests (e.g. only a \`.ps1\` recording changed)"
+          elif [ "${EXIT_CODE}" = "0" ]; then
+            status="✅ **PASS**"
+          else
+            status="❌ **FAIL** (exit ${EXIT_CODE})"
+          fi
+          tail_log=$(tail -n 80 test-output/log.txt 2>/dev/null || echo "(no log captured)")
+          {
+            echo "## Live test results — TestFx \`Record\` (changed test files only)"
+            echo
+            echo "${status}"
+            echo
+            echo "**Test projects:** \`${PROJECTS}\`"
+            echo "**Filter:** \`${FILTER:-<none>}\`"
+            echo "**PR head ref:** \`${PR_HEAD_REF}\`"
+            echo "**PR head sha:** \`${PR_HEAD_SHA}\`"
+            echo "**PR base ref:** \`${PR_BASE_REF}\`"
+            echo
+            echo "<details><summary>Changed test files run</summary>"
+            echo
+            echo '```'
+            echo "${CHANGED_TESTS_LIST}"
+            echo '```'
+            echo
+            echo "</details>"
+            echo
+            echo "**Workflow run:** ${RUN_URL}"
+            echo
+            echo "<details><summary>Last 80 lines of dotnet test output</summary>"
+            echo
+            echo '```'
+            echo "${tail_log}"
+            echo '```'
+            echo
+            echo "</details>"
+            echo
+            echo "_Posted by [agent-assist](https://github.com/Azure/issue-sentinel/blob/main/.github/workflows/live-test-powershell.yml) PowerShell live-test workflow._"
+          } > comment.md
+          echo "path=comment.md" >> "$GITHUB_OUTPUT"
+
+      - name: Post comment back to PR
+        if: always() && inputs.post_comment == true
+        env:
+          GH_TOKEN: ${{ steps.kv.outputs.pat }}
+        run: |
+          set -euo pipefail
+          gh api -X POST \
+            "repos/${PR_REPO}/issues/${PR_NUMBER}/comments" \
+            -F body=@${{ steps.body.outputs.path }} >/dev/null
+          echo "Comment posted to ${PR_REPO}#${PR_NUMBER}"
+
+      - name: Set workflow conclusion
+        if: always()
+        env:
+          HAS_TESTS: ${{ steps.detect.outputs.has_tests }}
+          EXIT_CODE: ${{ steps.test.outputs.exit_code }}
+          SELECTED: ${{ steps.test.outputs.selected }}
+        run: |
+          if [ "${HAS_TESTS}" != "true" ]; then
+            echo "No changed test files — skipping live test (neutral)."
+            exit 0
+          fi
+          if [ "${SELECTED}" = "false" ]; then
+            echo "No tests selected — neutral."
+            exit 0
+          fi
+          if [ "${EXIT_CODE}" = "0" ]; then
+            echo "TestFx tests passed."
+            exit 0
+          else
+            echo "TestFx tests failed (exit ${EXIT_CODE})."
+            exit 1
+          fi
