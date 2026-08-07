@@ -3,6 +3,61 @@ import * as github from '@actions/github';
 import axios from 'axios';
 
 const PoweredBy = "\n_Powered by [issue-sentinel](https://github.com/Azure/issue-Sentinel)_";
+const SentinelRequestAttempts = 3;
+
+class SentinelServiceUnavailableError extends Error {
+    constructor(endpoint: string, status?: number) {
+        const statusMessage = status ? `HTTP ${status}` : 'a network error';
+        super(`Issue Sentinel endpoint ${endpoint} remained unavailable after ${SentinelRequestAttempts} attempts (${statusMessage}).`);
+        this.name = 'SentinelServiceUnavailableError';
+    }
+}
+
+function isRetryableSentinelError(error: unknown): boolean {
+    if (!axios.isAxiosError(error)) {
+        return false;
+    }
+
+    const status = error.response?.status;
+    return status === undefined || status === 408 || status === 429 || status >= 500;
+}
+
+async function postToSentinel<T>(botUrl: string, endpoint: string, data: unknown): Promise<T> {
+    for (let attempt = 1; attempt <= SentinelRequestAttempts; attempt++) {
+        try {
+            return (await axios.post<T>(botUrl + endpoint, data)).data;
+        }
+        catch (error: unknown) {
+            if (!isRetryableSentinelError(error)) {
+                throw error;
+            }
+
+            const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+            if (attempt === SentinelRequestAttempts) {
+                throw new SentinelServiceUnavailableError(endpoint, status);
+            }
+
+            const statusMessage = status ? `HTTP ${status}` : 'network error';
+            core.warning(`Issue Sentinel endpoint ${endpoint} returned ${statusMessage}; retrying (${attempt}/${SentinelRequestAttempts}).`);
+            await new Promise(resolve => setTimeout(resolve, attempt * 1000));
+        }
+    }
+
+    throw new Error(`Issue Sentinel endpoint ${endpoint} retry loop ended unexpectedly.`);
+}
+
+async function runSentinelScan(name: string, scan: () => Promise<void>) {
+    try {
+        await scan();
+    }
+    catch (error: unknown) {
+        if (error instanceof SentinelServiceUnavailableError) {
+            core.warning(`${name} skipped: ${error.message}`);
+            return;
+        }
+        throw error;
+    }
+}
 
 async function main() {
     try {
@@ -24,7 +79,10 @@ async function main() {
         const { owner, repo } = context.repo;
 
         if (enable_similar_issues_scanning === 'true') {
-            await handleSimilarIssuesScanning(issue, owner, repo, token, botUrl);
+            await runSentinelScan(
+                'Similar issues scanning',
+                () => handleSimilarIssuesScanning(issue, owner, repo, token, botUrl)
+            );
         }
 
         if (enable_security_issues_scanning === 'true') {
@@ -33,7 +91,10 @@ async function main() {
                 core.info('Skip security issues scanning for edited and closed issue.');
             } 
             else {
-                await handleSecurityIssuesScanning(issue, owner, repo, token, botUrl);
+                await runSentinelScan(
+                    'Security issues scanning',
+                    () => handleSecurityIssuesScanning(issue, owner, repo, token, botUrl)
+                );
             }
         }
 
@@ -43,7 +104,10 @@ async function main() {
                 core.info('Skip adding UX tag for edited and closed issue.');
             }
             else {
-                await handleUXTag(issue, owner, repo, token, botUrl);
+                await runSentinelScan(
+                    'UX tagging',
+                    () => handleUXTag(issue, owner, repo, token, botUrl)
+                );
             }
         }
     }
@@ -61,35 +125,35 @@ async function handleSimilarIssuesScanning(issue: any, owner: string, repo: stri
 
     const if_closed: boolean = issue.state === 'closed';
     if (if_closed) {
-        await axios.post(botUrl + '/update_issue/', {
+        await postToSentinel(botUrl, '/update_issue/', {
             'raw': issue,
             'token': token
-        })
+        });
         core.info('This issue was closed. Update it to issue sentinel.');
         return;
     }
 
-    const if_replied: boolean = (await axios.post(botUrl + '/check_reply/', {
+    const if_replied = (await postToSentinel<{ result: boolean }>(botUrl, '/check_reply/', {
         'repo': owner_repo,
         'issue': issue.number,
         'token': token
-    })).data.result;
+    })).result;
     core.info('Check if this issue was already replied by the sentinel: ' + if_replied.toString());
 
     if (if_replied) {
-        await axios.post(botUrl + '/update_issue/', {
+        await postToSentinel(botUrl, '/update_issue/', {
             'raw': issue,
             'token': token
-        })
+        });
         core.info('This issue was already replied by the sentinel. Update the edited content to sentinel and skip this issue.');
         return;
     }
 
-    const response = (await axios.post(botUrl + '/search/', {
+    const response = await postToSentinel<{ predict: any[][], solution: any[] }>(botUrl, '/search/', {
         'raw': issue,
         'verify': true,
         'token': token //used for access issue comment to get possible solution
-    })).data;
+    });
     const prediction: any[][] = response.predict;
     core.info('Search by the issue sentinel successfully.');
     core.debug(`Response: ${response}`);
@@ -130,11 +194,11 @@ async function handleSimilarIssuesScanning(issue: any, owner: string, repo: stri
     message += PoweredBy;
 
     // Check reply status again before adding labels and comments to prevent duplicate labels and comments
-    const if_replied_again: boolean = (await axios.post(botUrl + '/check_reply/', {
+    const if_replied_again = (await postToSentinel<{ result: boolean }>(botUrl, '/check_reply/', {
         'repo': owner_repo,
         'issue': issue.number,
         'token': token
-    })).data.result;
+    })).result;
 
     if (if_replied_again) {
         core.info('This issue was already replied by the sentinel during processing. Skip adding labels and comments.');
@@ -162,7 +226,7 @@ async function handleSimilarIssuesScanning(issue: any, owner: string, repo: stri
     });
     core.info(`Comment sent to issue #${issueNumber}`);
 
-    await axios.post(botUrl + '/add_reply/', {
+    await postToSentinel(botUrl, '/add_reply/', {
         'repo': owner_repo,
         'issue': issue.number,
         'token': token
@@ -185,10 +249,10 @@ async function handleSecurityIssuesScanning(issue: any, owner: string, repo: str
         return;
     }
 
-    const if_security = (await axios.post(botUrl + '/security/', {
+    const if_security = (await postToSentinel<{ security: boolean }>(botUrl, '/security/', {
         'raw': issue,
         'token': token
-    })).data.security;
+    })).security;
     core.info('Search the security issues by the issue sentinel successfully.');
     core.debug(`Response: ${if_security}`);
 
@@ -220,10 +284,10 @@ async function handleSecurityIssuesScanning(issue: any, owner: string, repo: str
 async function handleUXTag(issue: any, owner: string, repo: string, token: string, botUrl: string) {
     const octokit = github.getOctokit(token);
     const issueNumber = issue.number;
-    const tagName = (await axios.post(botUrl + '/ux_tag/', {
+    const tagName = (await postToSentinel<{ tag: string | null }>(botUrl, '/ux_tag/', {
         'raw': issue,
         'token': token
-    })).data.tag;;
+    })).tag;
     core.info('Get UX tag by the issue sentinel successfully.');
 
     if (!tagName) {
