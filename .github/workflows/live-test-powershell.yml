@@ -281,7 +281,7 @@ jobs:
               echo
               echo "**Workflow run:** ${RUN_URL}"
               echo
-              echo "_Posted by [agent-assist](https://github.com/Azure/issue-sentinel/blob/main/.github/workflows/live-test-powershell.yml) PowerShell live-test workflow._"
+              echo "_Posted by the [Azure Client Tools Agent](https://github.com/Azure/issue-sentinel/blob/main/.github/workflows/live-test-powershell.yml) PowerShell live-test workflow._"
             } > comment.md
             echo "path=comment.md" >> "$GITHUB_OUTPUT"
             exit 0
@@ -323,7 +323,7 @@ jobs:
             echo
             echo "</details>"
             echo
-            echo "_Posted by [agent-assist](https://github.com/Azure/issue-sentinel/blob/main/.github/workflows/live-test-powershell.yml) PowerShell live-test workflow._"
+            echo "_Posted by the [Azure Client Tools Agent](https://github.com/Azure/issue-sentinel/blob/main/.github/workflows/live-test-powershell.yml) PowerShell live-test workflow._"
           } > comment.md
           echo "path=comment.md" >> "$GITHUB_OUTPUT"
 

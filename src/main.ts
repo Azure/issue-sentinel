@@ -2,18 +2,20 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import axios from 'axios';
 
-const PoweredBy = "\n_Powered by [issue-sentinel](https://github.com/Azure/issue-Sentinel)_";
-const SentinelRequestAttempts = 3;
+const PoweredBy = "\n_Powered by [Azure Client Tools Agent](https://github.com/Azure/issue-sentinel)_";
+const AgentServiceRequestAttempts = 3;
+// This legacy resource hostname is a compatibility contract for existing consumers.
+const AgentIssueIntelligenceUrl = 'https://similar-bot-prod-v2.wonderfulstone-4279f63d.eastus.azurecontainerapps.io';
 
-class SentinelServiceUnavailableError extends Error {
+class AgentServiceUnavailableError extends Error {
     constructor(endpoint: string, status?: number) {
         const statusMessage = status ? `HTTP ${status}` : 'a network error';
-        super(`Issue Sentinel endpoint ${endpoint} remained unavailable after ${SentinelRequestAttempts} attempts (${statusMessage}).`);
-        this.name = 'SentinelServiceUnavailableError';
+        super(`Azure Client Tools Agent endpoint ${endpoint} remained unavailable after ${AgentServiceRequestAttempts} attempts (${statusMessage}).`);
+        this.name = 'AgentServiceUnavailableError';
     }
 }
 
-function isRetryableSentinelError(error: unknown): boolean {
+function isRetryableAgentServiceError(error: unknown): boolean {
     if (!axios.isAxiosError(error)) {
         return false;
     }
@@ -22,36 +24,36 @@ function isRetryableSentinelError(error: unknown): boolean {
     return status === undefined || status === 408 || status === 429 || status >= 500;
 }
 
-async function postToSentinel<T>(botUrl: string, endpoint: string, data: unknown): Promise<T> {
-    for (let attempt = 1; attempt <= SentinelRequestAttempts; attempt++) {
+async function postToAgentService<T>(endpoint: string, data: unknown): Promise<T> {
+    for (let attempt = 1; attempt <= AgentServiceRequestAttempts; attempt++) {
         try {
-            return (await axios.post<T>(botUrl + endpoint, data)).data;
+            return (await axios.post<T>(AgentIssueIntelligenceUrl + endpoint, data)).data;
         }
         catch (error: unknown) {
-            if (!isRetryableSentinelError(error)) {
+            if (!isRetryableAgentServiceError(error)) {
                 throw error;
             }
 
             const status = axios.isAxiosError(error) ? error.response?.status : undefined;
-            if (attempt === SentinelRequestAttempts) {
-                throw new SentinelServiceUnavailableError(endpoint, status);
+            if (attempt === AgentServiceRequestAttempts) {
+                throw new AgentServiceUnavailableError(endpoint, status);
             }
 
             const statusMessage = status ? `HTTP ${status}` : 'network error';
-            core.warning(`Issue Sentinel endpoint ${endpoint} returned ${statusMessage}; retrying (${attempt}/${SentinelRequestAttempts}).`);
+            core.warning(`Azure Client Tools Agent endpoint ${endpoint} returned ${statusMessage}; retrying (${attempt}/${AgentServiceRequestAttempts}).`);
             await new Promise(resolve => setTimeout(resolve, attempt * 1000));
         }
     }
 
-    throw new Error(`Issue Sentinel endpoint ${endpoint} retry loop ended unexpectedly.`);
+    throw new Error(`Azure Client Tools Agent endpoint ${endpoint} retry loop ended unexpectedly.`);
 }
 
-async function runSentinelScan(name: string, scan: () => Promise<void>) {
+async function runAgentScan(name: string, scan: () => Promise<void>) {
     try {
         await scan();
     }
     catch (error: unknown) {
-        if (error instanceof SentinelServiceUnavailableError) {
+        if (error instanceof AgentServiceUnavailableError) {
             core.warning(`${name} skipped: ${error.message}`);
             return;
         }
@@ -69,7 +71,6 @@ async function main() {
             throw new Error('Invalid input! Similar issues scanning, security issues scanning, and UX tag are all disabled. Please enable at least one of them.');
         }
 
-        const botUrl = 'https://similar-bot-prod-v2.wonderfulstone-4279f63d.eastus.azurecontainerapps.io';
         const context = github.context;
         if (!context.payload.issue) {
             throw new Error("No issue found in the context payload. Please check your workflow trigger is 'issues'");
@@ -79,9 +80,9 @@ async function main() {
         const { owner, repo } = context.repo;
 
         if (enable_similar_issues_scanning === 'true') {
-            await runSentinelScan(
+            await runAgentScan(
                 'Similar issues scanning',
-                () => handleSimilarIssuesScanning(issue, owner, repo, token, botUrl)
+                () => handleSimilarIssuesScanning(issue, owner, repo, token)
             );
         }
 
@@ -91,9 +92,9 @@ async function main() {
                 core.info('Skip security issues scanning for edited and closed issue.');
             } 
             else {
-                await runSentinelScan(
+                await runAgentScan(
                     'Security issues scanning',
-                    () => handleSecurityIssuesScanning(issue, owner, repo, token, botUrl)
+                    () => handleSecurityIssuesScanning(issue, owner, repo, token)
                 );
             }
         }
@@ -104,9 +105,9 @@ async function main() {
                 core.info('Skip adding UX tag for edited and closed issue.');
             }
             else {
-                await runSentinelScan(
+                await runAgentScan(
                     'UX tagging',
-                    () => handleUXTag(issue, owner, repo, token, botUrl)
+                    () => handleUXTag(issue, owner, repo, token)
                 );
             }
         }
@@ -116,7 +117,7 @@ async function main() {
     }
 }
 
-async function handleSimilarIssuesScanning(issue: any, owner: string, repo: string, token: string, botUrl: string) {
+async function handleSimilarIssuesScanning(issue: any, owner: string, repo: string, token: string) {
     const octokit = github.getOctokit(token);
     const issueNumber = issue.number;
     let owner_repo = `${owner}/${repo}`;
@@ -125,37 +126,37 @@ async function handleSimilarIssuesScanning(issue: any, owner: string, repo: stri
 
     const if_closed: boolean = issue.state === 'closed';
     if (if_closed) {
-        await postToSentinel(botUrl, '/update_issue/', {
+        await postToAgentService('/update_issue/', {
             'raw': issue,
             'token': token
         });
-        core.info('This issue was closed. Update it to issue sentinel.');
+        core.info('This issue was closed. Updated it in Azure Client Tools Agent issue intelligence.');
         return;
     }
 
-    const if_replied = (await postToSentinel<{ result: boolean }>(botUrl, '/check_reply/', {
+    const if_replied = (await postToAgentService<{ result: boolean }>('/check_reply/', {
         'repo': owner_repo,
         'issue': issue.number,
         'token': token
     })).result;
-    core.info('Check if this issue was already replied by the sentinel: ' + if_replied.toString());
+    core.info('Check whether Azure Client Tools Agent already replied to this issue: ' + if_replied.toString());
 
     if (if_replied) {
-        await postToSentinel(botUrl, '/update_issue/', {
+        await postToAgentService('/update_issue/', {
             'raw': issue,
             'token': token
         });
-        core.info('This issue was already replied by the sentinel. Update the edited content to sentinel and skip this issue.');
+        core.info('Azure Client Tools Agent already replied. Updated the edited content and skipped this issue.');
         return;
     }
 
-    const response = await postToSentinel<{ predict: any[][], solution: any[] }>(botUrl, '/search/', {
+    const response = await postToAgentService<{ predict: any[][], solution: any[] }>('/search/', {
         'raw': issue,
         'verify': true,
         'token': token //used for access issue comment to get possible solution
     });
     const prediction: any[][] = response.predict;
-    core.info('Search by the issue sentinel successfully.');
+    core.info('Azure Client Tools Agent issue-intelligence search completed successfully.');
     core.debug(`Response: ${response}`);
     if (!prediction || prediction.length === 0) {
         core.info('No prediction found');
@@ -194,14 +195,14 @@ async function handleSimilarIssuesScanning(issue: any, owner: string, repo: stri
     message += PoweredBy;
 
     // Check reply status again before adding labels and comments to prevent duplicate labels and comments
-    const if_replied_again = (await postToSentinel<{ result: boolean }>(botUrl, '/check_reply/', {
+    const if_replied_again = (await postToAgentService<{ result: boolean }>('/check_reply/', {
         'repo': owner_repo,
         'issue': issue.number,
         'token': token
     })).result;
 
     if (if_replied_again) {
-        core.info('This issue was already replied by the sentinel during processing. Skip adding labels and comments.');
+        core.info('Azure Client Tools Agent replied during processing. Skipped duplicate labels and comments.');
         return;
     }
 
@@ -226,15 +227,15 @@ async function handleSimilarIssuesScanning(issue: any, owner: string, repo: stri
     });
     core.info(`Comment sent to issue #${issueNumber}`);
 
-    await postToSentinel(botUrl, '/add_reply/', {
+    await postToAgentService('/add_reply/', {
         'repo': owner_repo,
         'issue': issue.number,
         'token': token
     });
-    core.info('Save replied issue to issue sentinel.');
+    core.info('Saved the reply state in Azure Client Tools Agent issue intelligence.');
 }
 
-async function handleSecurityIssuesScanning(issue: any, owner: string, repo: string, token: string, botUrl: string) {
+async function handleSecurityIssuesScanning(issue: any, owner: string, repo: string, token: string) {
     const octokit = github.getOctokit(token);
     const issueNumber = issue.number;
     const { data: existedLabels } = await octokit.rest.issues.listLabelsOnIssue({
@@ -249,11 +250,11 @@ async function handleSecurityIssuesScanning(issue: any, owner: string, repo: str
         return;
     }
 
-    const if_security = (await postToSentinel<{ security: boolean }>(botUrl, '/security/', {
+    const if_security = (await postToAgentService<{ security: boolean }>('/security/', {
         'raw': issue,
         'token': token
     })).security;
-    core.info('Search the security issues by the issue sentinel successfully.');
+    core.info('Azure Client Tools Agent security classification completed successfully.');
     core.debug(`Response: ${if_security}`);
 
     if (!if_security) {
@@ -281,14 +282,14 @@ async function handleSecurityIssuesScanning(issue: any, owner: string, repo: str
     core.info(`Label added to issue #${issueNumber}`);
 }
 
-async function handleUXTag(issue: any, owner: string, repo: string, token: string, botUrl: string) {
+async function handleUXTag(issue: any, owner: string, repo: string, token: string) {
     const octokit = github.getOctokit(token);
     const issueNumber = issue.number;
-    const tagName = (await postToSentinel<{ tag: string | null }>(botUrl, '/ux_tag/', {
+    const tagName = (await postToAgentService<{ tag: string | null }>('/ux_tag/', {
         'raw': issue,
         'token': token
     })).tag;
-    core.info('Get UX tag by the issue sentinel successfully.');
+    core.info('Azure Client Tools Agent UX classification completed successfully.');
 
     if (!tagName) {
         core.info('No UX tag found.');
