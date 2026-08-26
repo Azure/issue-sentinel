@@ -1,6 +1,9 @@
 name: 'Azure Client Tools Agent issue intelligence'
 description: 'Find related issues and classify issue security and UX signals'
 inputs:
+  password:
+    description: 'Deprecated compatibility input; ignored'
+    required: false
   github-token:
     description: 'The GitHub token used to create an authenticated client'
     default: ${{ github.token }}
