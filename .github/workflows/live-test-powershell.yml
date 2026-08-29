@@ -55,7 +55,7 @@ jobs:
 
     steps:
       - name: Azure login (SDK Infrastructure, federated OIDC)
-        uses: azure/login@v2
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
           client-id:       ${{ secrets.AZURESDK_CLIENT_ID }}
           tenant-id:       ${{ secrets.AZURESDK_TENANT_ID }}
@@ -73,7 +73,7 @@ jobs:
           echo "pat=${pat}" >> "$GITHUB_OUTPUT"
 
       - name: Azure login (BAMI tenant, federated OIDC)
-        uses: azure/login@v2
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
           client-id:       ${{ secrets.BAMI_CLIENT_ID }}
           tenant-id:       ${{ secrets.BAMI_TENANT_ID }}
@@ -103,7 +103,7 @@ jobs:
           echo "PR base ref: ${{ steps.pr.outputs.base_ref }}"
 
       - name: Checkout PR head
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ steps.pr.outputs.owner }}/${{ steps.pr.outputs.repo }}
           ref: ${{ steps.pr.outputs.head_sha }}
@@ -111,7 +111,7 @@ jobs:
           path: azure-powershell
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: |
             6.0.x
@@ -245,7 +245,7 @@ jobs:
 
       - name: Upload test artifacts
         if: always() && steps.detect.outputs.has_tests == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: live-test-ps-pr-${{ inputs.pr_number }}
           path: test-output/
