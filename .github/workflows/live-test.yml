@@ -44,7 +44,7 @@ on:
         type: boolean
         default: true
       commit_recordings:
-        description: "Commit regenerated live-test recordings back to the PR head branch (same-repo branches only)"
+        description: "Commit verified live-test recordings back to eligible PR head branches"
         required: false
         type: boolean
         default: true
@@ -63,6 +63,14 @@ jobs:
     name: azdev test --live (PR ${{ inputs.pr_number }})
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    outputs:
+      agent_candidate: ${{ steps.pr.outputs.agent_candidate }}
+      head_repo: ${{ steps.pr.outputs.head_repo }}
+      head_ref: ${{ steps.pr.outputs.head_ref }}
+      head_sha: ${{ steps.pr.outputs.head_sha }}
+      recording_count: ${{ steps.rec.outputs.count }}
+      test_exit_code: ${{ steps.test.outputs.exit_code }}
+      playback_exit_code: ${{ steps.playback.outputs.exit_code }}
 
     env:
       PR_REPO: ${{ inputs.repo }}
@@ -99,8 +107,20 @@ jobs:
         id: pr
         env:
           GH_TOKEN: ${{ steps.kv.outputs.pat }}
+          DISPATCHED_HEAD_SHA: ${{ inputs.pr_head_sha }}
         run: |
           set -euo pipefail
+          case "$PR_REPO" in
+            Azure/azure-cli|Azure/azure-cli-extensions) ;;
+            *)
+              echo "::error::Unsupported pull request repository."
+              exit 1
+              ;;
+          esac
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Invalid pull request number."
+            exit 1
+          fi
           owner="${PR_REPO%/*}"
           repo="${PR_REPO#*/}"
           pr_json=$(gh api "repos/${owner}/${repo}/pulls/${PR_NUMBER}")
@@ -108,10 +128,27 @@ jobs:
           head_ref=$(echo "$pr_json" | jq -r .head.ref)
           base_ref=$(echo "$pr_json" | jq -r .base.ref)
           head_repo=$(echo "$pr_json" | jq -r .head.repo.full_name)
+          head_owner=$(echo "$pr_json" | jq -r .head.repo.owner.login)
+          pr_author=$(echo "$pr_json" | jq -r .user.login)
+          has_job_marker=$(echo "$pr_json" | jq -r \
+            '(.body // "") | test("<!-- agent-assist:foundry-job [a-f0-9]{64} -->")')
+          agent_candidate=false
+          if [ "$head_repo" != "$PR_REPO" ] \
+              && [ "$head_owner" = "$pr_author" ] \
+              && [[ "$head_ref" == agent-assist/* ]] \
+              && [ "$has_job_marker" = "true" ]; then
+            agent_candidate=true
+          fi
+          if [ -n "$DISPATCHED_HEAD_SHA" ] \
+              && [ "$head_sha" != "$DISPATCHED_HEAD_SHA" ]; then
+            echo "::error::PR head changed after dispatch."
+            exit 1
+          fi
           echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
           echo "head_ref=${head_ref}" >> "$GITHUB_OUTPUT"
           echo "base_ref=${base_ref}" >> "$GITHUB_OUTPUT"
           echo "head_repo=${head_repo}" >> "$GITHUB_OUTPUT"
+          echo "agent_candidate=${agent_candidate}" >> "$GITHUB_OUTPUT"
           echo "owner=${owner}"       >> "$GITHUB_OUTPUT"
           echo "repo=${repo}"         >> "$GITHUB_OUTPUT"
 
@@ -292,6 +329,42 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Collected ${count} changed recording file(s) into test-output/recordings/."
 
+      - name: Verify recordings replay (playback, no --live)
+        id: playback
+        if: >-
+          always()
+          && steps.detect.outputs.has_tests == 'true'
+          && steps.rec.outputs.count != '0'
+          && steps.test.outputs.exit_code == '0'
+        env:
+          STEMS: ${{ steps.detect.outputs.stems }}
+        run: |
+          source .venv/bin/activate
+          set -o pipefail
+          mkdir -p test-output
+          rm -f test-output/playback-results.xml
+          set +e
+          # shellcheck disable=SC2086
+          azdev test $STEMS --series --discover \
+            --xml-path test-output/playback-results.xml \
+            2>&1 | tee test-output/playback-log.txt
+          rc=$?
+          set -e
+          if [ ! -s test-output/playback-results.xml ] \
+              || ! grep -q '<testcase' test-output/playback-results.xml; then
+            if [ "$rc" = "0" ]; then
+              echo "::error::Playback selected zero tests; recordings will not be committed."
+              rc=2
+            fi
+          fi
+          echo "exit_code=${rc}" >> "$GITHUB_OUTPUT"
+          if [ "$rc" = "0" ]; then
+            echo "Playback verification passed."
+          else
+            echo "::warning::Playback verification failed (exit ${rc}); recordings will not be committed."
+          fi
+          exit 0
+
       - name: Commit recordings to PR branch
         id: push
         if: >-
@@ -300,6 +373,7 @@ jobs:
           && inputs.commit_recordings == true
           && steps.rec.outputs.count != '0'
           && steps.test.outputs.exit_code == '0'
+          && steps.playback.outputs.exit_code == '0'
           && steps.pr.outputs.head_repo == inputs.repo
         env:
           PR_REPO_NAME: ${{ steps.pr.outputs.repo }}
@@ -328,7 +402,7 @@ jobs:
             exit 0
           fi
           git commit -m "Update live-test recordings from azdev --live" \
-            -m "Regenerated by the Azure Client Tools Agent live-test workflow. Run: ${RUN_URL}" >/dev/null
+            -m "Regenerated by the X Engineering Agent live-test workflow. Run: ${RUN_URL}" >/dev/null
           sha=$(git rev-parse HEAD)
           # Push with the azclibot token (installation token has contents:write).
           git remote set-url origin "https://x-access-token:${PAT}@github.com/${OWNER}/${REPO}.git"
@@ -370,6 +444,8 @@ jobs:
           REC_FILES: ${{ steps.rec.outputs.files }}
           REC_COMMITTED: ${{ steps.push.outputs.committed }}
           REC_COMMIT_SHA: ${{ steps.push.outputs.commit_sha }}
+          PLAYBACK_EXIT: ${{ steps.playback.outputs.exit_code }}
+          AGENT_CANDIDATE: ${{ steps.pr.outputs.agent_candidate }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -432,7 +508,13 @@ jobs:
               echo
               echo "**Live-test recordings:** ${REC_COUNT} regenerated — archived in workflow artifact \`live-test-pr-${PR_NUMBER}\` (\`recordings/\`)."
               if [ "${REC_COMMITTED}" = "true" ]; then
-                echo "> ✅ Committed to \`${PR_HEAD_REF}\` as \`${REC_COMMIT_SHA}\` so CI playback uses the fresh recording."
+                echo "> ✅ Recorded live, verified in playback, and committed to \`${PR_HEAD_REF}\` as \`${REC_COMMIT_SHA}\` so CI playback uses the fresh recording."
+              elif [ "${EXIT_CODE}" != "0" ]; then
+                echo "> ⚠️ The recording was not committed because the live test failed. Fix the test failure before publishing its regenerated cassette."
+              elif [ "${PLAYBACK_EXIT:-}" != "0" ] && [ -n "${PLAYBACK_EXIT:-}" ]; then
+                echo "> ⚠️ The regenerated recording did not replay successfully, so it was not committed."
+              elif [ "${HEAD_REPO}" != "${PR_REPO}" ] && [ "${AGENT_CANDIDATE}" = "true" ]; then
+                echo "> ⏳ This agent-owned fork is eligible for automatic recording publication. The isolated trusted publisher job will verify and push it."
               elif [ "${HEAD_REPO}" != "${PR_REPO}" ]; then
                 echo "> ℹ️ This PR is from a fork, so recordings were not pushed automatically. Download them from the artifact and commit to your branch."
               fi
@@ -486,3 +568,249 @@ jobs:
             echo "azdev tests failed (exit ${EXIT_CODE})."
             exit 1
           fi
+
+  publish-agent-recordings:
+    name: Publish verified recordings to agent fork
+    needs: live-test
+    if: >-
+      always()
+      && inputs.commit_recordings == true
+      && needs.live-test.outputs.agent_candidate == 'true'
+      && needs.live-test.outputs.head_repo != inputs.repo
+      && needs.live-test.outputs.recording_count != '0'
+      && needs.live-test.outputs.test_exit_code == '0'
+      && needs.live-test.outputs.playback_exit_code == '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PR_REPO: ${{ inputs.repo }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+
+    steps:
+      - name: Azure login (SDK Infrastructure, federated OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURESDK_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURESDK_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURESDK_SUBSCRIPTION_ID }}
+
+      - name: Fetch isolated publication credentials
+        id: kv
+        run: |
+          set -euo pipefail
+          publish_token=$(az keyvault secret show \
+            --vault-name azclibotfinegrainedpat \
+            --name x-agent-publish-token \
+            --query value -o tsv)
+          bot_token=$(az keyvault secret show \
+            --vault-name azclibotfinegrainedpat \
+            --name x-engineering-agent-token \
+            --query value -o tsv)
+          echo "::add-mask::${publish_token}"
+          echo "::add-mask::${bot_token}"
+          echo "publish_token=${publish_token}" >> "$GITHUB_OUTPUT"
+          echo "bot_token=${bot_token}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify agent-owned PR provenance
+        id: verify
+        env:
+          GH_TOKEN: ${{ steps.kv.outputs.publish_token }}
+          EXPECTED_HEAD_REPO: ${{ needs.live-test.outputs.head_repo }}
+          EXPECTED_HEAD_REF: ${{ needs.live-test.outputs.head_ref }}
+          EXPECTED_HEAD_SHA: ${{ needs.live-test.outputs.head_sha }}
+          DISPATCHED_HEAD_SHA: ${{ inputs.pr_head_sha }}
+        run: |
+          set -euo pipefail
+          case "$PR_REPO" in
+            Azure/azure-cli|Azure/azure-cli-extensions) ;;
+            *)
+              echo "::error::Unsupported pull request repository."
+              exit 1
+              ;;
+          esac
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Invalid pull request number."
+            exit 1
+          fi
+          pr_json=$(gh api "repos/${PR_REPO}/pulls/${PR_NUMBER}")
+          publisher=$(gh api user --jq .login)
+          repo_name="${PR_REPO#*/}"
+          expected_repo="${publisher}/${repo_name}"
+          actual_repo=$(echo "$pr_json" | jq -r .head.repo.full_name)
+          actual_ref=$(echo "$pr_json" | jq -r .head.ref)
+          actual_sha=$(echo "$pr_json" | jq -r .head.sha)
+          actual_author=$(echo "$pr_json" | jq -r .user.login)
+          has_job_marker=$(echo "$pr_json" | jq -r \
+            '(.body // "") | test("<!-- agent-assist:foundry-job [a-f0-9]{64} -->")')
+          if [ "$actual_repo" != "$expected_repo" ] \
+              || [ "$actual_repo" != "$EXPECTED_HEAD_REPO" ] \
+              || [ "$actual_ref" != "$EXPECTED_HEAD_REF" ] \
+              || [ "$actual_sha" != "$EXPECTED_HEAD_SHA" ] \
+              || [ "$actual_author" != "$publisher" ] \
+              || [[ "$actual_ref" != agent-assist/* ]] \
+              || [ "$has_job_marker" != "true" ]; then
+            echo "::error::PR is not a verified X Engineering Agent publication target."
+            exit 1
+          fi
+          if [ -n "$DISPATCHED_HEAD_SHA" ] \
+              && [ "$actual_sha" != "$DISPATCHED_HEAD_SHA" ]; then
+            echo "::error::PR head changed after live-test dispatch."
+            exit 1
+          fi
+          {
+            echo "publisher=${publisher}"
+            echo "head_repo=${actual_repo}"
+            echo "head_ref=${actual_ref}"
+            echo "head_sha=${actual_sha}"
+          } >> "$GITHUB_OUTPUT"
+          gh api --paginate --slurp \
+            "repos/${PR_REPO}/pulls/${PR_NUMBER}/files?per_page=100" \
+            > "$RUNNER_TEMP/pr-files.json"
+
+      - name: Download live-test artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: live-test-pr-${{ inputs.pr_number }}
+          path: artifact
+
+      - name: Checkout exact agent PR head
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.verify.outputs.head_repo }}
+          ref: ${{ steps.verify.outputs.head_sha }}
+          token: ${{ steps.kv.outputs.publish_token }}
+          persist-credentials: false
+          fetch-depth: 0
+          path: pr-head
+
+      - name: Validate and stage recording files
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import pathlib
+          import shutil
+          import json
+
+          workspace = pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+          source = (workspace / "artifact" / "recordings").resolve()
+          target = (workspace / "pr-head").resolve()
+          if not source.is_dir():
+              raise SystemExit("Recording artifact directory is missing")
+
+          pages = json.loads(
+              (pathlib.Path(os.environ["RUNNER_TEMP"]) / "pr-files.json")
+              .read_text(encoding="utf-8")
+          )
+          changed_files = [
+              item
+              for page in pages
+              for item in page
+              if isinstance(item, dict)
+          ]
+          allowed_directories = {
+              pathlib.PurePosixPath(item["filename"]).parent / "recordings"
+              for item in changed_files
+              if (
+                  item.get("status") != "removed"
+                  and isinstance(item.get("filename"), str)
+                  and "tests" in pathlib.PurePosixPath(item["filename"]).parts
+                  and pathlib.PurePosixPath(item["filename"]).name.startswith("test_")
+                  and pathlib.PurePosixPath(item["filename"]).suffix == ".py"
+              )
+          }
+          if not allowed_directories:
+              raise SystemExit("PR has no changed test-file recording directories")
+
+          files = []
+          total_size = 0
+          for path in source.rglob("*"):
+              if path.is_symlink():
+                  raise SystemExit(f"Recording artifact contains a symlink: {path}")
+              if not path.is_file():
+                  continue
+              relative = path.relative_to(source)
+              parts = relative.parts
+              if (
+                  "tests" not in parts
+                  or "recordings" not in parts
+                  or parts.index("tests") >= parts.index("recordings")
+                  or path.suffix != ".yaml"
+                  or any(ord(char) < 32 for char in relative.as_posix())
+                  or relative.parent not in allowed_directories
+              ):
+                  raise SystemExit(f"Invalid recording artifact path: {relative}")
+              size = path.stat().st_size
+              if size > 4 * 1024 * 1024:
+                  raise SystemExit(f"Recording artifact file is too large: {relative}")
+              path.read_text(encoding="utf-8")
+              total_size += size
+              files.append(relative)
+
+          if not files or len(files) > 100 or total_size > 20 * 1024 * 1024:
+              raise SystemExit("Recording artifact count or total size is invalid")
+
+          manifest = workspace / "recording-files.txt"
+          with manifest.open("w", encoding="utf-8") as output:
+              for relative in sorted(files):
+                  destination = (target / relative).resolve()
+                  if target not in destination.parents:
+                      raise SystemExit(f"Recording path escapes checkout: {relative}")
+                  destination.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copyfile(source / relative, destination)
+                  output.write(f"{relative.as_posix()}\n")
+          PY
+          cd pr-head
+          git add --pathspec-from-file="$GITHUB_WORKSPACE/recording-files.txt"
+          git diff --cached --name-only > "$RUNNER_TEMP/staged-files.txt"
+          diff -u "$GITHUB_WORKSPACE/recording-files.txt" "$RUNNER_TEMP/staged-files.txt"
+
+      - name: Commit and push recordings
+        id: push
+        env:
+          GH_TOKEN: ${{ steps.kv.outputs.publish_token }}
+          HEAD_REPO: ${{ steps.verify.outputs.head_repo }}
+          HEAD_REF: ${{ steps.verify.outputs.head_ref }}
+          HEAD_SHA: ${{ steps.verify.outputs.head_sha }}
+          PUBLISHER: ${{ steps.verify.outputs.publisher }}
+          PUBLISH_TOKEN: ${{ steps.kv.outputs.publish_token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          current_pr_sha=$(gh api "repos/${PR_REPO}/pulls/${PR_NUMBER}" --jq .head.sha)
+          current_ref_sha=$(gh api \
+            "repos/${HEAD_REPO}/git/ref/heads/${HEAD_REF}" --jq .object.sha)
+          if [ "$current_pr_sha" != "$HEAD_SHA" ] \
+              || [ "$current_ref_sha" != "$HEAD_SHA" ]; then
+            echo "::error::Agent branch moved after recording verification."
+            exit 1
+          fi
+          cd pr-head
+          if git diff --cached --quiet; then
+            echo "::error::Validated recording artifact produced no commit."
+            exit 1
+          fi
+          git config user.name "X Engineering Agent"
+          git config user.email "59631311+a0x1ab@users.noreply.github.com"
+          git commit -m "Update live-test recordings from azdev --live" \
+            -m "Regenerated and playback-verified by X Engineering Agent. Run: ${RUN_URL}" >/dev/null
+          commit_sha=$(git rev-parse HEAD)
+          git remote set-url origin \
+            "https://x-access-token:${PUBLISH_TOKEN}@github.com/${HEAD_REPO}.git"
+          git push origin "HEAD:refs/heads/${HEAD_REF}"
+          echo "commit_sha=${commit_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Report automatic recording publication
+        env:
+          GH_TOKEN: ${{ steps.kv.outputs.bot_token }}
+          COMMIT_SHA: ${{ steps.push.outputs.commit_sha }}
+          HEAD_REF: ${{ steps.verify.outputs.head_ref }}
+        run: |
+          set -euo pipefail
+          body=$(printf '%s\n\n%s\n\n%s' \
+            '## Live-test recordings published' \
+            "✅ X Engineering Agent committed the regenerated, playback-verified recordings to \`${HEAD_REF}\` as \`${COMMIT_SHA}\`." \
+            "**Workflow run:** ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")
+          gh api -X POST \
+            "repos/${PR_REPO}/issues/${PR_NUMBER}/comments" \
+            -f body="$body" >/dev/null
