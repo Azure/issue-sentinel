@@ -182,6 +182,14 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Checkout live-test workflow tools
+        uses: actions/checkout@v4
+        with:
+          repository: Azure/issue-sentinel
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          path: issue-sentinel-workflow
+
       - name: Resolve changed test files
         id: detect
         env:
@@ -192,10 +200,15 @@ jobs:
           cd "$PR_REPO_NAME"
           git fetch origin "${BASE_REF}" --depth=200 || true
 
-          # All changed test files in the PR (added / copied / modified / renamed).
-          # A "test file" is a test_*.py living under a tests/ directory.
+          # Only command-module and extension tests are valid azdev live-test
+          # targets. Core-package and other nested tests use different runners.
           changed=$(git diff --name-only --diff-filter=ACMR "origin/${BASE_REF}...HEAD" || true)
-          test_files=$(echo "$changed" | grep -E '(^|/)tests/.*/?test_[^/]*\.py$' || true)
+          if [ "$PR_REPO_NAME" = "azure-cli-extensions" ]; then
+            test_pattern='^src/[^/]+/azext_[^/]+/tests/latest/test_[^/]*\.py$'
+          else
+            test_pattern='^src/azure-cli/azure/cli/command_modules/[^/]+/tests/latest/test_[^/]*\.py$'
+          fi
+          test_files=$(echo "$changed" | grep -E "$test_pattern" || true)
 
           # Only files that still exist on the PR head (a renamed-away path won't).
           existing=""
@@ -205,35 +218,53 @@ jobs:
           done <<< "$test_files"
           test_files="$existing"
 
-          # Unique pytest selectors: bare test-file stems (azdev matches on filename).
-          stems=$(echo "$test_files" | sed '/^$/d' | xargs -n1 basename 2>/dev/null \
-            | sed 's/\.py$//' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+          # Select changed test methods/classes. Fall back to the file when shared
+          # fixtures or helpers changed, so unrelated tests do not block the PR.
+          mkdir -p ../test-output
+          set +e
+          stems=$(printf '%s\n' "$test_files" \
+            | python ../issue-sentinel-workflow/.github/scripts/changed_python_tests.py \
+                --base "origin/${BASE_REF}" \
+                --manifest ../test-selection.json \
+                2>../test-output/selection-error.log)
+          selector_rc=$?
+          set -e
 
           # Newly-added test files (for reporting).
           new_files=$(git diff --name-only --diff-filter=A "origin/${BASE_REF}...HEAD" \
-            | grep -E '(^|/)tests/.*/?test_[^/]*\.py$' || true)
+            | grep -E "$test_pattern" || true)
 
           # Decide azdev setup flags. Extensions must be installed by name so azdev
           # can discover their tests; core modules are all available after a plain setup.
           if [ "$PR_REPO_NAME" = "azure-cli-extensions" ]; then
             kind="extension"
-            ext=$(echo "$test_files" | awk -F/ '$1=="src"{print $2}' | sort -u | head -1)
+            extensions=$(echo "$test_files" \
+              | awk -F/ '$1=="src"{print $2}' \
+              | sort -u \
+              | paste -sd ' ' -)
           else
             kind="module"
-            ext=""
+            extensions=""
           fi
 
-          if [ -z "$stems" ]; then
+          if [ "$selector_rc" != "0" ]; then
+            echo "has_tests=true" >> "$GITHUB_OUTPUT"
+            echo "selection_error=true" >> "$GITHUB_OUTPUT"
+            echo "::error::Changed tests could not be selected safely."
+            cat ../test-output/selection-error.log
+          elif [ -z "$stems" ]; then
             echo "has_tests=false" >> "$GITHUB_OUTPUT"
+            echo "selection_error=false" >> "$GITHUB_OUTPUT"
             echo "No changed test files detected — nothing to live-test."
           else
             echo "has_tests=true" >> "$GITHUB_OUTPUT"
+            echo "selection_error=false" >> "$GITHUB_OUTPUT"
             echo "Changed test files:"
             echo "$test_files"
             echo "Selectors: $stems"
           fi
           echo "kind=${kind}" >> "$GITHUB_OUTPUT"
-          echo "ext=${ext}" >> "$GITHUB_OUTPUT"
+          echo "extensions=${extensions}" >> "$GITHUB_OUTPUT"
           echo "stems=${stems}" >> "$GITHUB_OUTPUT"
           if [ -n "$new_files" ]; then
             echo "has_new_tests=true" >> "$GITHUB_OUTPUT"
@@ -250,25 +281,30 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Install azdev and Azure CLI from source
-        if: steps.detect.outputs.has_tests == 'true'
+        if: >-
+          steps.detect.outputs.has_tests == 'true'
+          && steps.detect.outputs.selection_error != 'true'
         env:
           KIND: ${{ steps.detect.outputs.kind }}
-          EXT: ${{ steps.detect.outputs.ext }}
+          EXTENSIONS: ${{ steps.detect.outputs.extensions }}
         run: |
           set -euo pipefail
           python -m venv .venv
           source .venv/bin/activate
           python -m pip install --upgrade pip
           python -m pip install azdev
-          if [ "$KIND" = "extension" ] && [ -n "$EXT" ]; then
-            azdev setup -c azure-cli -r azure-cli-extensions -e "$EXT"
+          if [ "$KIND" = "extension" ] && [ -n "$EXTENSIONS" ]; then
+            read -r -a extensions <<< "$EXTENSIONS"
+            azdev setup -c azure-cli -r azure-cli-extensions -e "${extensions[@]}"
           else
             azdev setup -c azure-cli
           fi
 
-      - name: Run azdev test (live, series) — changed test files only
+      - name: Run azdev test (live, series) — changed tests only
         id: test
-        if: steps.detect.outputs.has_tests == 'true'
+        if: >-
+          steps.detect.outputs.has_tests == 'true'
+          && steps.detect.outputs.selection_error != 'true'
         env:
           STEMS: ${{ steps.detect.outputs.stems }}
           KIND: ${{ steps.detect.outputs.kind }}
@@ -276,14 +312,31 @@ jobs:
           source .venv/bin/activate
           set -o pipefail
           mkdir -p test-output
-          # Build a fresh discovery index so bare test-file stems resolve, then run
-          # only the changed test files live.
+          cp test-selection.json test-output/
           set +e
-          azdev test $STEMS --live --series --discover \
+          python issue-sentinel-workflow/.github/scripts/changed_python_tests.py \
+            --validate-manifest test-selection.json \
+            2>&1 | tee test-output/selection.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" != "0" ]; then
+            echo "exit_code=2" >> "$GITHUB_OUTPUT"
+            echo "ran_tests=false" >> "$GITHUB_OUTPUT"
+            echo "validation_error=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "validation_error=false" >> "$GITHUB_OUTPUT"
+          # Use the freshly generated and path-validated discovery index.
+          set +e
+          azdev test $STEMS --live --series \
             --xml-path test-output/results.xml \
             2>&1 | tee test-output/log.txt
           rc=$?
           set -e
+          if grep -q "not found. If newly added, re-run with --discover" test-output/log.txt; then
+            echo "::error::At least one changed-test selector did not resolve."
+            rc=2
+          fi
           ran=true
           if [ ! -s test-output/results.xml ] || ! grep -q '<testcase' test-output/results.xml; then
             ran=false
@@ -298,7 +351,10 @@ jobs:
 
       - name: Collect live-test recordings
         id: rec
-        if: always() && steps.detect.outputs.has_tests == 'true'
+        if: >-
+          always()
+          && steps.detect.outputs.has_tests == 'true'
+          && steps.detect.outputs.selection_error != 'true'
         env:
           PR_REPO_NAME: ${{ steps.pr.outputs.repo }}
         run: |
@@ -345,11 +401,15 @@ jobs:
           rm -f test-output/playback-results.xml
           set +e
           # shellcheck disable=SC2086
-          azdev test $STEMS --series --discover \
+          azdev test $STEMS --series \
             --xml-path test-output/playback-results.xml \
             2>&1 | tee test-output/playback-log.txt
           rc=$?
           set -e
+          if grep -q "not found. If newly added, re-run with --discover" test-output/playback-log.txt; then
+            echo "::error::At least one playback selector did not resolve."
+            rc=2
+          fi
           if [ ! -s test-output/playback-results.xml ] \
               || ! grep -q '<testcase' test-output/playback-results.xml; then
             if [ "$rc" = "0" ]; then
@@ -429,6 +489,8 @@ jobs:
         id: body
         env:
           HAS_TESTS: ${{ steps.detect.outputs.has_tests }}
+          SELECTION_ERROR: ${{ steps.detect.outputs.selection_error }}
+          VALIDATION_ERROR: ${{ steps.test.outputs.validation_error }}
           STEMS: ${{ steps.detect.outputs.stems }}
           KIND: ${{ steps.detect.outputs.kind }}
           EXIT_CODE: ${{ steps.test.outputs.exit_code }}
@@ -449,6 +511,35 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          if [ "${SELECTION_ERROR}" = "true" ] || [ "${VALIDATION_ERROR}" = "true" ]; then
+            {
+              echo "## Live test results — changed test files only"
+              echo
+              echo "❌ **FAIL** — changed tests could not be selected safely."
+              echo
+              echo "**PR head ref:** \`${PR_HEAD_REF}\`"
+              echo "**PR head sha:** \`${PR_HEAD_SHA}\`"
+              echo "**PR base ref:** \`${PR_BASE_REF}\`"
+              echo
+              echo "<details><summary>Selector error</summary>"
+              echo
+              echo '```'
+              if [ "${SELECTION_ERROR}" = "true" ]; then
+                cat test-output/selection-error.log 2>/dev/null || true
+              else
+                cat test-output/selection.log 2>/dev/null || true
+              fi
+              echo '```'
+              echo
+              echo "</details>"
+              echo
+              echo "**Workflow run:** ${RUN_URL}"
+              echo
+              echo "_Posted by the [X Engineering Agent](https://github.com/Azure/issue-sentinel/blob/main/.github/workflows/live-test.yml) live-test workflow._"
+            } > comment.md
+            echo "path=comment.md" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "${HAS_TESTS}" != "true" ]; then
             {
               echo "## Live test results — changed test files only"
@@ -473,7 +564,9 @@ jobs:
           else
             status="❌ **FAIL** (exit ${EXIT_CODE})"
           fi
-          tail_log=$(tail -n 80 test-output/log.txt 2>/dev/null || echo "(no log captured)")
+          tail_log=$(tail -n 80 test-output/log.txt 2>/dev/null \
+            || tail -n 80 test-output/selection.log 2>/dev/null \
+            || echo "(no log captured)")
           {
             echo "## Live test results — \`azdev test --live --series\` (changed test files only)"
             echo
@@ -555,8 +648,14 @@ jobs:
         if: always()
         env:
           HAS_TESTS: ${{ steps.detect.outputs.has_tests }}
+          SELECTION_ERROR: ${{ steps.detect.outputs.selection_error }}
+          VALIDATION_ERROR: ${{ steps.test.outputs.validation_error }}
           EXIT_CODE: ${{ steps.test.outputs.exit_code }}
         run: |
+          if [ "${SELECTION_ERROR}" = "true" ] || [ "${VALIDATION_ERROR}" = "true" ]; then
+            echo "Changed tests could not be selected safely."
+            exit 1
+          fi
           if [ "${HAS_TESTS}" != "true" ]; then
             echo "No changed test files — skipping live test (neutral)."
             exit 0
