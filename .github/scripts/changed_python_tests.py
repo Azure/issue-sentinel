@@ -109,56 +109,79 @@ def _module_name(path):
     return None
 
 
-def _class_is_unique(path, class_name):
-    test_root = next(
-        (parent for parent in Path(path).parents if parent.name == "tests"),
-        None,
-    )
-    if test_root is None:
-        return False
+def _azdev_key_count(path, key):
+    profile_root = Path(path).parent
     count = 0
-    for candidate in test_root.rglob("test_*.py"):
+    for candidate in profile_root.glob("test_*.py"):
         try:
-            source = candidate.read_text(encoding="utf-8")
+            source = candidate.read_text(encoding="utf-8-sig")
         except (OSError, UnicodeError):
-            return False
-        if not re.search(rf"(?m)^class\s+{re.escape(class_name)}\b", source):
-            continue
+            return None
+        if candidate.stem == key:
+            count += 1
         try:
             tree = ast.parse(source, filename=str(candidate))
         except SyntaxError:
-            return False
+            return None
         for node in tree.body:
-            if (
-                isinstance(node, ast.ClassDef)
-                and node.name == class_name
-                and any(
-                    isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and child.name.startswith("test_")
-                    for child in node.body
-                )
-            ):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            test_methods = [
+                child for child in node.body
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and child.name.startswith("test_")
+            ]
+            if not test_methods:
+                continue
+            if node.name == key:
                 count += 1
-                if count > 1:
-                    return False
-    return count == 1
+            count += sum(method.name == key for method in test_methods)
+    return count
+
+
+def _class_is_unique(path, class_name):
+    return _azdev_key_count(path, class_name) == 1
+
+
+def _fallback_selectors(path, module):
+    stem = Path(path).stem
+    if _azdev_key_count(path, stem) == 1:
+        return [f"{module}.{stem}"]
+
+    try:
+        tree = ast.parse(Path(path).read_text(encoding="utf-8-sig"), filename=path)
+    except (OSError, UnicodeError, SyntaxError) as error:
+        raise ValueError(
+            f"azdev cannot uniquely select changed test file: {path}",
+        ) from error
+    methods = [
+        child.name
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+        for child in node.body
+        if (
+            isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and child.name.startswith("test_")
+        )
+    ]
+    if methods and all(_azdev_key_count(path, name) == 1 for name in methods):
+        return [f"{module}.{name}" for name in methods]
+    raise ValueError(f"azdev cannot uniquely select changed test file: {path}")
 
 
 def _selectors_for_file(base, path):
-    stem = Path(path).stem
     module = _module_name(path)
     if not module:
         raise ValueError(f"Unsupported azdev live-test path: {path}")
-    fallback = f"{module}.{stem}"
     changed, has_deletions = _changed_lines(base, path)
     if has_deletions or not changed:
-        return [fallback]
+        return _fallback_selectors(path, module)
 
-    source = Path(path).read_text(encoding="utf-8")
+    source = Path(path).read_text(encoding="utf-8-sig")
     try:
         tree = ast.parse(source, filename=path)
     except SyntaxError:
-        return [fallback]
+        return _fallback_selectors(path, module)
 
     selectors = []
     covered = set()
@@ -168,7 +191,7 @@ def _selectors_for_file(base, path):
                 lines = set(_span(node))
                 covered.update(lines)
                 if changed & lines:
-                    return [fallback]
+                    return _fallback_selectors(path, module)
             continue
         if not isinstance(node, ast.ClassDef):
             continue
@@ -186,7 +209,7 @@ def _selectors_for_file(base, path):
             covered.update(class_lines)
             continue
         if not module or not _class_is_unique(path, node.name):
-            return [fallback]
+            return _fallback_selectors(path, module)
         selectors.append(f"{module}.{node.name}")
         covered.update(class_lines)
 
@@ -203,7 +226,7 @@ def _selectors_for_file(base, path):
         selected_lines,
     )
     if (changed - covered - ignored) or not selectors:
-        return [fallback]
+        return _fallback_selectors(path, module)
     return selectors
 
 

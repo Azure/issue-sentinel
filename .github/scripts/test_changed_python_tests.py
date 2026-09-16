@@ -172,6 +172,21 @@ class SampleTests:
             ["sample.test_sample"],
         )
 
+    def test_file_and_class_name_collision_uses_methods(self):
+        before = ""
+        after = """\
+class test_sample:
+    def test_one(self):
+        assert True
+
+    def test_two(self):
+        assert True
+"""
+        self.assertEqual(
+            self._selectors(before, after),
+            ["sample.test_one", "sample.test_two"],
+        )
+
     def test_package_qualifiers_match_azdev(self):
         self.assertEqual(
             MODULE._module_name(
