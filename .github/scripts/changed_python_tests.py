@@ -3,6 +3,7 @@
 
 import argparse
 import ast
+import json
 import re
 import subprocess
 import sys
@@ -124,7 +125,7 @@ def _azdev_key_count(path, key):
         except SyntaxError:
             return None
         for node in tree.body:
-            if not isinstance(node, ast.ClassDef):
+            if not isinstance(node, ast.ClassDef) or node.name.startswith("_"):
                 continue
             test_methods = [
                 child for child in node.body
@@ -143,6 +144,53 @@ def _class_is_unique(path, class_name):
     return _azdev_key_count(path, class_name) == 1
 
 
+def _has_descendant(tree, class_name):
+    descendants = {class_name}
+    while True:
+        found = {
+            node.name
+            for node in tree.body
+            if isinstance(node, ast.ClassDef)
+            if any(
+                isinstance(base, ast.Name) and base.id in descendants
+                for base in node.bases
+            )
+        }
+        if found <= descendants:
+            return len(descendants) > 1
+        descendants.update(found)
+
+
+def _has_complex_pytest_collection(tree):
+    if any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test_")
+        for node in tree.body
+    ):
+        return True
+    classes = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+    }
+    for name, node in classes.items():
+        has_tests = any(
+            isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and child.name.startswith("test_")
+            for child in node.body
+        )
+        if name.startswith("_") and has_tests:
+            return True
+        if node.bases and not has_tests:
+            return True
+        if any(
+            isinstance(base, ast.Name) and base.id in classes
+            for base in node.bases
+        ):
+            return True
+    return False
+
+
 def _fallback_selectors(path, module):
     stem = Path(path).stem
     if _azdev_key_count(path, stem) == 1:
@@ -154,10 +202,26 @@ def _fallback_selectors(path, module):
         raise ValueError(
             f"azdev cannot uniquely select changed test file: {path}",
         ) from error
+    if _has_complex_pytest_collection(tree):
+        raise ValueError(f"azdev cannot uniquely select changed test file: {path}")
+    test_classes = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and not node.name.startswith("_")
+        if any(
+            isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and child.name.startswith("test_")
+            for child in node.body
+        )
+    ]
+    if test_classes and all(
+        _azdev_key_count(path, node.name) == 1 for node in test_classes
+    ):
+        return [f"{module}.{node.name}" for node in test_classes]
+
     methods = [
         child.name
-        for node in tree.body
-        if isinstance(node, ast.ClassDef)
+        for node in test_classes
         for child in node.body
         if (
             isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -167,6 +231,44 @@ def _fallback_selectors(path, module):
     if methods and all(_azdev_key_count(path, name) == 1 for name in methods):
         return [f"{module}.{name}" for name in methods]
     raise ValueError(f"azdev cannot uniquely select changed test file: {path}")
+
+
+def _resolve_azdev_selector(index, selector):
+    parts = selector.split(".")
+    for length in range(1, len(parts) + 1):
+        candidate = ".".join(parts[-length:])
+        if candidate in index:
+            return index[candidate]
+    raise KeyError(selector)
+
+
+def _validate_azdev_manifest(manifest_path):
+    from azdev.operations.testtool import _get_test_index
+    from azdev.operations.testtool.profile_context import current_profile
+
+    entries = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    selectors = {entry["selector"] for entry in entries}
+    index = _get_test_index(
+        current_profile(),
+        True,
+        target_tests=selectors,
+    )
+    errors = []
+    for entry in entries:
+        selector = entry["selector"]
+        expected = Path(entry["path"]).resolve()
+        try:
+            resolved = _resolve_azdev_selector(index, selector)
+        except KeyError:
+            errors.append(f"{selector}: not found in the fresh azdev index")
+            continue
+        actual = Path(resolved.split("::", 1)[0]).resolve()
+        if actual != expected:
+            errors.append(
+                f"{selector}: resolved to {actual}, expected changed file {expected}",
+            )
+    if errors:
+        raise ValueError("Unsafe azdev selector resolution:\n" + "\n".join(errors))
 
 
 def _selectors_for_file(base, path):
@@ -193,7 +295,7 @@ def _selectors_for_file(base, path):
                 if changed & lines:
                     return _fallback_selectors(path, module)
             continue
-        if not isinstance(node, ast.ClassDef):
+        if not isinstance(node, ast.ClassDef) or node.name.startswith("_"):
             continue
 
         test_methods = [
@@ -208,6 +310,8 @@ def _selectors_for_file(base, path):
         if not changed_in_class:
             covered.update(class_lines)
             continue
+        if _has_descendant(tree, node.name):
+            return _fallback_selectors(path, module)
         if not module or not _class_is_unique(path, node.name):
             return _fallback_selectors(path, module)
         selectors.append(f"{module}.{node.name}")
@@ -232,12 +336,30 @@ def _selectors_for_file(base, path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--base")
+    mode.add_argument("--validate-manifest")
+    parser.add_argument("--manifest")
     args = parser.parse_args()
+    if args.validate_manifest:
+        _validate_azdev_manifest(args.validate_manifest)
+        return
+
     paths = [line.strip() for line in sys.stdin if line.strip()]
     selectors = []
+    manifest = []
     for path in paths:
-        selectors.extend(_selectors_for_file(args.base, path))
+        file_selectors = _selectors_for_file(args.base, path)
+        selectors.extend(file_selectors)
+        manifest.extend(
+            {"selector": selector, "path": str(Path(path).resolve())}
+            for selector in file_selectors
+        )
+    if args.manifest:
+        Path(args.manifest).write_text(
+            json.dumps(manifest, indent=2) + "\n",
+            encoding="utf-8",
+        )
     print(" ".join(dict.fromkeys(selectors)))
 
 
