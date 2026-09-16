@@ -14,10 +14,10 @@ HUNK = re.compile(
     r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@",
 )
 COMMAND_TEST = re.compile(
-    r"^src/azure-cli/azure/cli/command_modules/([^/]+)/tests/latest/test_[^/]+\.py$",
+    r"^src/azure-cli/azure/cli/command_modules/([^/]+)/tests/latest/test_[^/]*\.py$",
 )
 EXTENSION_TEST = re.compile(
-    r"^src/[^/]+/(azext_[^/]+)/tests/latest/test_[^/]+\.py$",
+    r"^src/[^/]+/(azext_[^/]+)/tests/latest/test_[^/]*\.py$",
 )
 
 
@@ -235,6 +235,8 @@ def _fallback_selectors(path, module):
 
 def _resolve_azdev_selector(index, selector):
     parts = selector.split(".")
+    # Match azdev's _find_test exactly: it tries the bare suffix first and
+    # expands toward the fully qualified selector.
     for length in range(1, len(parts) + 1):
         candidate = ".".join(parts[-length:])
         if candidate in index:

@@ -337,6 +337,12 @@ class test_sample:
             ),
             "azext_ssh",
         )
+        self.assertEqual(
+            MODULE._module_name(
+                "src/ssh/azext_ssh/tests/latest/test_.py",
+            ),
+            "azext_ssh",
+        )
         self.assertIsNone(
             MODULE._module_name(
                 "src/azure-cli-core/azure/cli/core/tests/test_util.py",

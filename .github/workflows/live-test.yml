@@ -204,9 +204,9 @@ jobs:
           # targets. Core-package and other nested tests use different runners.
           changed=$(git diff --name-only --diff-filter=ACMR "origin/${BASE_REF}...HEAD" || true)
           if [ "$PR_REPO_NAME" = "azure-cli-extensions" ]; then
-            test_pattern='^src/[^/]+/azext_[^/]+/tests/latest/test_[^/]+\.py$'
+            test_pattern='^src/[^/]+/azext_[^/]+/tests/latest/test_[^/]*\.py$'
           else
-            test_pattern='^src/azure-cli/azure/cli/command_modules/[^/]+/tests/latest/test_[^/]+\.py$'
+            test_pattern='^src/azure-cli/azure/cli/command_modules/[^/]+/tests/latest/test_[^/]*\.py$'
           fi
           test_files=$(echo "$changed" | grep -E "$test_pattern" || true)
 
@@ -524,9 +524,11 @@ jobs:
               echo "<details><summary>Selector error</summary>"
               echo
               echo '```'
-              cat test-output/selection-error.log 2>/dev/null \
-                || cat test-output/selection.log 2>/dev/null \
-                || true
+              if [ "${SELECTION_ERROR}" = "true" ]; then
+                cat test-output/selection-error.log 2>/dev/null || true
+              else
+                cat test-output/selection.log 2>/dev/null || true
+              fi
               echo '```'
               echo
               echo "</details>"
