@@ -232,10 +232,13 @@ jobs:
           # can discover their tests; core modules are all available after a plain setup.
           if [ "$PR_REPO_NAME" = "azure-cli-extensions" ]; then
             kind="extension"
-            ext=$(echo "$test_files" | awk -F/ '$1=="src"{print $2}' | sort -u | head -1)
+            extensions=$(echo "$test_files" \
+              | awk -F/ '$1=="src"{print $2}' \
+              | sort -u \
+              | paste -sd ' ' -)
           else
             kind="module"
-            ext=""
+            extensions=""
           fi
 
           if [ -z "$stems" ]; then
@@ -248,7 +251,7 @@ jobs:
             echo "Selectors: $stems"
           fi
           echo "kind=${kind}" >> "$GITHUB_OUTPUT"
-          echo "ext=${ext}" >> "$GITHUB_OUTPUT"
+          echo "extensions=${extensions}" >> "$GITHUB_OUTPUT"
           echo "stems=${stems}" >> "$GITHUB_OUTPUT"
           if [ -n "$new_files" ]; then
             echo "has_new_tests=true" >> "$GITHUB_OUTPUT"
@@ -268,15 +271,16 @@ jobs:
         if: steps.detect.outputs.has_tests == 'true'
         env:
           KIND: ${{ steps.detect.outputs.kind }}
-          EXT: ${{ steps.detect.outputs.ext }}
+          EXTENSIONS: ${{ steps.detect.outputs.extensions }}
         run: |
           set -euo pipefail
           python -m venv .venv
           source .venv/bin/activate
           python -m pip install --upgrade pip
           python -m pip install azdev
-          if [ "$KIND" = "extension" ] && [ -n "$EXT" ]; then
-            azdev setup -c azure-cli -r azure-cli-extensions -e "$EXT"
+          if [ "$KIND" = "extension" ] && [ -n "$EXTENSIONS" ]; then
+            read -r -a extensions <<< "$EXTENSIONS"
+            azdev setup -c azure-cli -r azure-cli-extensions -e "${extensions[@]}"
           else
             azdev setup -c azure-cli
           fi
