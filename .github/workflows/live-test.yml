@@ -182,6 +182,14 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Checkout live-test workflow tools
+        uses: actions/checkout@v4
+        with:
+          repository: Azure/issue-sentinel
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          path: issue-sentinel-workflow
+
       - name: Resolve changed test files
         id: detect
         env:
@@ -192,10 +200,15 @@ jobs:
           cd "$PR_REPO_NAME"
           git fetch origin "${BASE_REF}" --depth=200 || true
 
-          # All changed test files in the PR (added / copied / modified / renamed).
-          # A "test file" is a test_*.py living under a tests/ directory.
+          # Only command-module and extension tests are valid azdev live-test
+          # targets. Core-package and other nested tests use different runners.
           changed=$(git diff --name-only --diff-filter=ACMR "origin/${BASE_REF}...HEAD" || true)
-          test_files=$(echo "$changed" | grep -E '(^|/)tests/.*/?test_[^/]*\.py$' || true)
+          if [ "$PR_REPO_NAME" = "azure-cli-extensions" ]; then
+            test_pattern='^src/[^/]+/azext_[^/]+/tests/latest/test_[^/]+\.py$'
+          else
+            test_pattern='^src/azure-cli/azure/cli/command_modules/[^/]+/tests/latest/test_[^/]+\.py$'
+          fi
+          test_files=$(echo "$changed" | grep -E "$test_pattern" || true)
 
           # Only files that still exist on the PR head (a renamed-away path won't).
           existing=""
@@ -205,13 +218,15 @@ jobs:
           done <<< "$test_files"
           test_files="$existing"
 
-          # Unique pytest selectors: bare test-file stems (azdev matches on filename).
-          stems=$(echo "$test_files" | sed '/^$/d' | xargs -n1 basename 2>/dev/null \
-            | sed 's/\.py$//' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+          # Select changed test methods/classes. Fall back to the file when shared
+          # fixtures or helpers changed, so unrelated tests do not block the PR.
+          stems=$(printf '%s\n' "$test_files" \
+            | python ../issue-sentinel-workflow/.github/scripts/changed_python_tests.py \
+                --base "origin/${BASE_REF}")
 
           # Newly-added test files (for reporting).
           new_files=$(git diff --name-only --diff-filter=A "origin/${BASE_REF}...HEAD" \
-            | grep -E '(^|/)tests/.*/?test_[^/]*\.py$' || true)
+            | grep -E "$test_pattern" || true)
 
           # Decide azdev setup flags. Extensions must be installed by name so azdev
           # can discover their tests; core modules are all available after a plain setup.
@@ -266,7 +281,7 @@ jobs:
             azdev setup -c azure-cli
           fi
 
-      - name: Run azdev test (live, series) — changed test files only
+      - name: Run azdev test (live, series) — changed tests only
         id: test
         if: steps.detect.outputs.has_tests == 'true'
         env:
@@ -276,14 +291,18 @@ jobs:
           source .venv/bin/activate
           set -o pipefail
           mkdir -p test-output
-          # Build a fresh discovery index so bare test-file stems resolve, then run
-          # only the changed test files live.
+          # Build a fresh discovery index so test methods, classes, and fallback
+          # file stems resolve, then run only the changed test scope live.
           set +e
           azdev test $STEMS --live --series --discover \
             --xml-path test-output/results.xml \
             2>&1 | tee test-output/log.txt
           rc=$?
           set -e
+          if grep -q "not found. If newly added, re-run with --discover" test-output/log.txt; then
+            echo "::error::At least one changed-test selector did not resolve."
+            rc=2
+          fi
           ran=true
           if [ ! -s test-output/results.xml ] || ! grep -q '<testcase' test-output/results.xml; then
             ran=false
@@ -350,6 +369,10 @@ jobs:
             2>&1 | tee test-output/playback-log.txt
           rc=$?
           set -e
+          if grep -q "not found. If newly added, re-run with --discover" test-output/playback-log.txt; then
+            echo "::error::At least one playback selector did not resolve."
+            rc=2
+          fi
           if [ ! -s test-output/playback-results.xml ] \
               || ! grep -q '<testcase' test-output/playback-results.xml; then
             if [ "$rc" = "0" ]; then
