@@ -47,9 +47,9 @@ def _changed_lines(base, path):
         if not match:
             continue
         start = int(match.group(2))
-        count = int(match.group(3) or "1")
+        count = int(match.group(3)) if match.group(3) is not None else 1
         changed.update(range(start, start + count))
-    return changed, has_deletions
+    return changed, has_deletions and not changed, has_deletions
 
 
 def _imported_names(node):
@@ -67,7 +67,9 @@ def _imported_names(node):
     return set()
 
 
-def _ignorable_module_lines(tree, source_lines, selected_lines):
+def _ignorable_module_lines(
+    tree, source_lines, selected_lines, changed_lines, has_deletions,
+):
     ignored = set()
     for node in tree.body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -82,6 +84,10 @@ def _ignorable_module_lines(tree, source_lines, selected_lines):
             ]
             if (
                 names
+                and not (
+                    has_deletions
+                    and changed_lines.intersection(_span(node))
+                )
                 and any(child.lineno in selected_lines for child in usages)
                 and not any(child.lineno not in selected_lines for child in usages)
             ):
@@ -277,8 +283,8 @@ def _selectors_for_file(base, path):
     module = _module_name(path)
     if not module:
         raise ValueError(f"Unsupported azdev live-test path: {path}")
-    changed, has_deletions = _changed_lines(base, path)
-    if has_deletions or not changed:
+    changed, deletion_only, has_deletions = _changed_lines(base, path)
+    if deletion_only or not changed:
         return _fallback_selectors(path, module)
 
     source = Path(path).read_text(encoding="utf-8-sig")
@@ -295,7 +301,9 @@ def _selectors_for_file(base, path):
                 lines = set(_span(node))
                 covered.update(lines)
                 if changed & lines:
-                    return _fallback_selectors(path, module)
+                    if _azdev_key_count(path, node.name) != 1:
+                        return _fallback_selectors(path, module)
+                    selectors.append(f"{module}.{node.name}")
             continue
         if not isinstance(node, ast.ClassDef) or node.name.startswith("_"):
             continue
@@ -312,24 +320,75 @@ def _selectors_for_file(base, path):
         if not changed_in_class:
             covered.update(class_lines)
             continue
-        if _has_descendant(tree, node.name):
+        method_lines = {
+            method.name: set(_span(method))
+            for method in test_methods
+        }
+        changed_methods = [
+            name for name, lines in method_lines.items()
+            if changed_in_class & lines
+        ]
+        method_covered = set().union(
+            *(method_lines[name] for name in changed_methods),
+        ) if changed_methods else set()
+        class_header_start = min(
+            [node.lineno]
+            + [decorator.lineno for decorator in node.decorator_list],
+        )
+        class_header = set(range(class_header_start, node.lineno + 1))
+        class_support_changes = {
+            line for line in changed_in_class - method_covered - class_header
+            if (
+                source.splitlines()[line - 1].strip()
+                and not source.splitlines()[line - 1].lstrip().startswith("#")
+            )
+        }
+        if changed_in_class & class_header:
+            if _has_descendant(tree, node.name) or not _class_is_unique(
+                path, node.name,
+            ):
+                return _fallback_selectors(path, module)
+            selectors.append(f"{module}.{node.name}")
+        elif class_support_changes or not changed_methods:
             return _fallback_selectors(path, module)
-        if not module or not _class_is_unique(path, node.name):
-            return _fallback_selectors(path, module)
-        selectors.append(f"{module}.{node.name}")
+        else:
+            if _has_descendant(tree, node.name):
+                return _fallback_selectors(path, module)
+            for name in changed_methods:
+                if _azdev_key_count(path, name) != 1:
+                    return _fallback_selectors(path, module)
+                selectors.append(f"{module}.{name}")
         covered.update(class_lines)
 
     selected_lines = {
         line
         for node in tree.body
-        if isinstance(node, ast.ClassDef)
-        and f"{module}.{node.name}" in selectors
-        for line in _span(node)
+        for child in (
+            [node]
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and f"{module}.{node.name}" in selectors
+            )
+            else (
+                [node] + [
+                    method for method in node.body
+                    if (
+                        isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and f"{module}.{method.name}" in selectors
+                    )
+                ]
+                if isinstance(node, ast.ClassDef)
+                else []
+            )
+        )
+        for line in _span(child)
     }
     ignored = _ignorable_module_lines(
         tree,
         source.splitlines(),
         selected_lines,
+        changed,
+        has_deletions,
     )
     if (changed - covered - ignored) or not selectors:
         return _fallback_selectors(path, module)
