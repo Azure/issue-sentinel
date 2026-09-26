@@ -88,7 +88,7 @@ class AddedTests:
             ["sample.AddedTests"],
         )
 
-    def test_changed_test_method_falls_back_to_file(self):
+    def test_changed_test_method_selects_only_method(self):
         before = """\
 class SampleTests:
     def test_one(self):
@@ -103,7 +103,53 @@ class SampleTests:
         )
         self.assertEqual(
             self._selectors(before, after),
-            ["sample.test_sample"],
+            ["sample.test_two"],
+        )
+
+    def test_replaced_test_decorator_selects_only_method(self):
+        before = """\
+class StorageTests:
+    @ResourceGroupPreparer()
+    @StorageAccountPreparer()
+    def test_download(self):
+        assert True
+
+    @StorageAccountPreparer()
+    def test_unrelated_copy(self):
+        assert True
+"""
+        after = before.replace(
+            "@StorageAccountPreparer()\n    def test_download",
+            "@StorageAccountPreparer(kind='StorageV2')\n    def test_download",
+        )
+        self.assertEqual(
+            self._selectors(before, after),
+            ["sample.test_download"],
+        )
+
+    def test_method_selection_survives_duplicate_class_name(self):
+        before = """\
+class StorageTests:
+    @StorageAccountPreparer()
+    def test_download(self):
+        assert True
+"""
+        after = before.replace(
+            "@StorageAccountPreparer()",
+            "@StorageAccountPreparer(kind='StorageV2')",
+        )
+        sibling = """\
+class StorageTests:
+    def test_other(self):
+        assert True
+"""
+        self.assertEqual(
+            self._selectors(
+                before,
+                after,
+                {"test_other.py": sibling},
+            ),
+            ["sample.test_download"],
         )
 
     def test_changed_class_helper_falls_back_to_file(self):
@@ -136,7 +182,7 @@ class SampleTests:
             ["sample.test_sample"],
         )
 
-    def test_deletion_only_hunk_falls_back_to_file(self):
+    def test_deleted_test_and_changed_method_selects_surviving_method(self):
         before = """\
 class SampleTests:
     def test_one(self):
@@ -151,6 +197,24 @@ class SampleTests:
         ).replace(
             "    def test_two(self):\n        assert True",
             "    def test_two(self):\n        assert 2 + 2 == 4",
+        )
+        self.assertEqual(
+            self._selectors(before, after),
+            ["sample.test_two"],
+        )
+
+    def test_deletion_only_hunk_falls_back_to_file(self):
+        before = """\
+class SampleTests:
+    def test_one(self):
+        assert True
+
+    def test_two(self):
+        assert True
+"""
+        after = before.replace(
+            "    def test_one(self):\n        assert True\n\n",
+            "",
         )
         self.assertEqual(
             self._selectors(before, after),
