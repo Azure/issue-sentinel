@@ -327,15 +327,20 @@ jobs:
           } > comment.md
           echo "path=comment.md" >> "$GITHUB_OUTPUT"
 
+      - name: Check out live-test comment helper
+        if: always() && inputs.post_comment == true
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: issue-sentinel
+
       - name: Post comment back to PR
         if: always() && inputs.post_comment == true
         env:
           GH_TOKEN: ${{ steps.kv.outputs.pat }}
         run: |
           set -euo pipefail
-          gh api -X POST \
-            "repos/${PR_REPO}/issues/${PR_NUMBER}/comments" \
-            -F body=@${{ steps.body.outputs.path }} >/dev/null
+          python3 issue-sentinel/scripts/post_live_test_comment.py \
+            "${{ steps.body.outputs.path }}"
           echo "Comment posted to ${PR_REPO}#${PR_NUMBER}"
 
       - name: Set workflow conclusion
