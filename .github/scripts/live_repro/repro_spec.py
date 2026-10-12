@@ -1,13 +1,7 @@
 # GENERATED FILE - DO NOT EDIT.
 # Vendored from x-engineering-agent `src/tools/live_tests/reproduction.py` by
 # `scripts/sync_issue_sentinel_repro.py`; edit the source and re-run it.
-"""Vendored ReproSpec validation, hashing and placeholders.
-
-Identical to the validation sections of
-``x_engineering_agent.tools.live_tests.reproduction`` (see that
-module docstring for the ReproSpec v1 contract); dispatch code is
-omitted.
-"""
+"""ReproSpec validation, hashing and placeholders copied from the Agent."""
 
 import hashlib
 import json
@@ -17,7 +11,7 @@ from urllib.parse import urlsplit
 import repro_policy as settings
 from repro_sensitive_data import scan_sensitive_content
 
-# Repository kinds, repro tools and Agent forks from x_engineering_agent REPO_PROFILES.
+# Repository kinds, repro tools and Agent forks from the Agent's REPO_PROFILES.
 REPO_PROFILES = {
     'Azure/azclips': {'kind': 'dotnet-cli', 'repro_tools': (), 'agent_fork': 'Azure/azclips'},
     'Azure/azure-cli': {'kind': 'cli', 'repro_tools': ('az',), 'agent_fork': 'a0x1ab/azure-cli'},
@@ -154,14 +148,12 @@ _MAX_SPEC_JSON_CHARS = 20_000
 
 
 class ReproSpecError(ValueError):
-    """A ReproSpec failed validation; ``errors`` lists every problem."""
+    """A ReproSpec failed validation; errors lists every problem."""
 
     def __init__(self, errors):
         self.errors = list(errors)
         super().__init__("Invalid ReproSpec: " + "; ".join(self.errors))
 
-
-# Value checks --------------------------------------------------------------
 
 def _strip_placeholders(value):
     return _PLACEHOLDER.sub("", value)
@@ -284,7 +276,7 @@ def _check_value(value, loc, errors):
 
 
 def _check_query(value, loc, errors):
-    """JMESPath for ``--query``: argv-only, so pipes and filters are fine."""
+    """JMESPath for --query; it's argv only, so pipes and filters are fine."""
     if not isinstance(value, str) or not value:
         errors.append(f"{loc}: must be a non-empty string")
         return
@@ -340,7 +332,7 @@ def _check_name(value, loc, errors):
 
 
 def _check_text(value, loc, errors):
-    """Single-line issue text compared as a fixed string by the workflow."""
+    """Single-line issue text that the workflow compares as a fixed string."""
     if not isinstance(value, str) or not value.strip():
         errors.append(f"{loc}: must be a non-empty string")
         return
@@ -353,8 +345,6 @@ def _check_text(value, loc, errors):
     _check_sensitive(value, loc, errors)
 
 
-# az steps ------------------------------------------------------------------
-
 def _special_flag_names():
     return (
         settings.REPRO_AZ_DENIED_ARGUMENTS
@@ -364,7 +354,7 @@ def _special_flag_names():
 
 
 def _parse_flags(tokens, loc, errors):
-    """Split ``tokens`` (after the command path) into ``[(flag, [values])]``."""
+    """Split tokens after the command path into [(flag, [values])]."""
     flags = []
     for index, token in enumerate(tokens):
         tloc = f"{loc}[{index}]"
@@ -396,7 +386,7 @@ def _command_allowed(path):
 
 
 def _validate_rest(path, flags, loc, errors):
-    """``az rest`` is allowed only as GET on ARM inside the run's RG."""
+    """az rest is only allowed as GET on ARM inside the run's resource group."""
     if path != ["rest"]:
         errors.append(f"{loc}: `az rest` takes no subcommands")
     urls = []
@@ -533,8 +523,6 @@ def _validate_az_step(step, loc, errors):
     return {"argv": list(argv)}
 
 
-# PowerShell steps ----------------------------------------------------------
-
 def _ps_special_parameters():
     return (
         settings.REPRO_PS_DENIED_PARAMETERS | settings.REPRO_PS_FILE_PARAMETERS
@@ -551,7 +539,7 @@ def _ps_noun_prefix(noun):
 
 
 def ps_cmdlet_module(cmdlet):
-    """Az module (``Az.<X>``) that ships an allowlisted cmdlet, else None."""
+    """Az module (Az.<X>) that ships an allowlisted cmdlet, else None."""
     match = _PS_CMDLET.match(cmdlet) if isinstance(cmdlet, str) else None
     prefix = _ps_noun_prefix(match.group(2)) if match else None
     return settings.REPRO_PS_NOUN_MODULES.get(prefix) if prefix else None
@@ -663,8 +651,6 @@ def _validate_ps_step(step, loc, errors):
     return {"cmdlet": cmdlet, "parameters": dict(parameters)}
 
 
-# Spec ----------------------------------------------------------------------
-
 def _validate_expect(value, loc, errors, allowed_keys):
     if not isinstance(value, dict):
         errors.append(f"{loc}: must be an object")
@@ -744,15 +730,9 @@ def _tool_matches_repository(tool, repository, errors):
 
 
 def validate_spec(spec):
-    """Validate and normalise a ReproSpec without touching the network.
+    """Validate and normalize a ReproSpec without touching the network.
 
-    ``spec`` is a dict or its JSON text. Returns ``{"valid": bool,
-    "errors": [str], "spec": normalized dict | None, "spec_hash": str |
-    None}``. Errors name the offending location (for example
-    ``repro[0] `az rest` --url``) but never echo full argument values.
-    The normalized spec fills defaults (schema_version, versions in
-    canonical order, location, timeout_minutes, setup) so equal intents
-    hash equally.
+    Returns valid, errors, spec and spec_hash; defaults are filled so equal intents hash equally.
     """
     try:
         spec = _parse_spec(spec)
@@ -891,7 +871,7 @@ def validate_spec(spec):
 
 
 def canonical_spec_json(spec):
-    """Canonical JSON text of an already normalized spec (hash input)."""
+    """Canonical JSON text of a normalized spec (the hash input)."""
     return json.dumps(
         spec, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
     )
@@ -909,27 +889,20 @@ def _require_valid(spec):
 
 
 def spec_hash(spec):
-    """Deterministic SHA-256 hex of the normalized spec.
-
-    Key order, omitted defaults and version order do not change the hash.
-    Raises ``ReproSpecError`` when the spec is invalid.
-    """
+    """SHA-256 of the normalized spec; raises ReproSpecError if the spec is invalid."""
     return _require_valid(spec)["spec_hash"]
 
-
-# Placeholders ----------------------------------------------------------------
 
 def _derive_name(spec_digest, run_id, index):
     digest = hashlib.sha256(
         f"{spec_digest}:{run_id}:{index}".encode("utf-8")
     ).hexdigest()
-    # 12 lowercase alphanumerics, starting with a letter: valid for storage
-    # accounts, key vaults, web apps and most other resource types.
+    # 12 lowercase alphanumerics starting with a letter, valid for most resource types.
     return f"xr{digest[:10]}"
 
 
 def reproduction_resource_group(issue, run_id):
-    """Per-run resource group ``xea-repro-<repo>-<number>-<run>``."""
+    """Per-run resource group xea-repro-<repo>-<number>-<run>."""
     match = _ISSUE.match(issue or "")
     if not match:
         raise ValueError("issue must be `Azure/<repo>#<number>`")
@@ -942,13 +915,9 @@ def reproduction_resource_group(issue, run_id):
 
 def placeholder_values(spec_digest, run_id, *, resource_group, location,
                        subscription_id=None, password=None, file_path=None):
-    """Values for ``resolve_placeholders``; names are deterministic.
+    """Values for resolve_placeholders.
 
-    ``{nameN}`` derives from the spec hash and run id, so re-running the
-    same run reuses the same names and different runs never collide.
-    ``{name}`` is an alias of ``{name1}``. ``{sub}``, ``{password}`` and
-    ``{file}`` are only known inside the workflow; when omitted they stay
-    unresolved and ``resolve_placeholders(strict=False)`` keeps them.
+    Names come from the spec hash and run id, so re-runs reuse them and runs never collide.
     """
     values = {
         f"name{i}": _derive_name(spec_digest, run_id, i)
@@ -975,11 +944,9 @@ def _resolve_text(text, values, strict, missing):
 
 
 def resolve_placeholders(spec, values, *, strict=True):
-    """Return a copy of a normalized spec with step placeholders replaced.
+    """Copy of a normalized spec with step placeholders replaced.
 
-    Only ``argv`` tokens and PowerShell parameter values are resolved;
-    ``observed_in_issue`` and ``expect`` stay literal. With ``strict`` a
-    placeholder without a value raises ``ReproSpecError``.
+    observed_in_issue and expect stay literal; strict raises on a placeholder without a value.
     """
     missing = set()
 

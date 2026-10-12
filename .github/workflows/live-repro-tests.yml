@@ -1,7 +1,6 @@
 name: Live Repro Tests
 
-# Unit tests for the live reproduction workflows and their trusted runner
-# scripts (tests/live_repro). No Azure login, no secrets.
+# Unit tests for the live reproduction workflows and runners; no Azure login or secrets.
 
 on:
   pull_request:

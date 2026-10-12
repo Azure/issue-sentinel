@@ -1,11 +1,6 @@
 name: Live Repro Janitor
 
-# Versioned template: the source of truth lives in x-engineering-agent under
-# deploy/issue-sentinel/ (see its README for how to sync it here).
-#
-# Backstop for live-repro.yml: deletes `xea-repro-*` resource groups in the
-# BAMI live-test subscription whose `expiresAt` tag has passed (or is
-# missing). Command output goes to files; the log shows counts and names.
+# Deletes xea-repro-* resource groups whose expiresAt tag has passed or is missing.
 
 on:
   schedule:

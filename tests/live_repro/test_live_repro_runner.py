@@ -1,11 +1,4 @@
-"""Trusted runner and sanitizer of the live reproduction workflow
-(plan items C2c and C2f).
-
-The runner in ``.github/scripts/live_repro`` uses a generated copy of the
-X Engineering Agent ReproSpec validator; these tests cover the injection
-corpus, the dispatch re-verification, quiet argv execution and output
-redaction. Parity with the Agent source is checked in the Agent repository.
-"""
+"""Tests for the live reproduction runner, sanitizer and janitor."""
 
 import datetime as dt
 import hashlib
@@ -70,7 +63,7 @@ def _spec(**overrides):
 
 
 def _dispatch(spec=None):
-    """Inputs exactly as ``dispatch_reproduction`` sends them."""
+    """Inputs exactly as `dispatch_reproduction` sends them."""
     result = repro_spec.validate_spec(spec or _spec())
     assert result["valid"], result["errors"]
     return {
@@ -89,9 +82,8 @@ def _env(inputs, **extra):
     return env
 
 
-# Vendored validator ---------------------------------------------------------
-# Parity with the Agent's C2b validator is checked by the Agent repository's
-# sync tests; here the vendored copy must reject the corpus on its own.
+# Parity with the Agent's validator is checked in the Agent repository;
+# here the vendored copy must reject the corpus on its own.
 
 def _corpus_cases():
     cases = {}
@@ -164,8 +156,6 @@ def test_vendored_sensitive_data_keeps_plain_text():
     assert repro_sensitive_data.redact_sensitive_text(text) == text
 
 
-# Dispatch re-verification ----------------------------------------------------
-
 def test_verify_accepts_exact_dispatch():
     inputs = _dispatch()
     spec = repro_runner.verify_spec(inputs["spec"], inputs["spec_hash"], ISSUE)
@@ -228,8 +218,6 @@ def test_pr_mode_needs_an_issue_on_the_source_repository():
         repro_runner.verify_spec(ext_issue["spec"], ext_issue["spec_hash"],
                                  ext_issue["issue"], "42", HEAD)
 
-
-# PR-head re-runs (C2f) -------------------------------------------------------
 
 @pytest.mark.parametrize("pr_number, head, message", [
     ("42", "", "pr_head_sha"),
@@ -521,8 +509,6 @@ def test_rg_delete_skips_when_rg_create_never_ran(tmp_path, monkeypatch, capsys)
     assert calls == [["group", "create"], ["group", "exists"]]
 
 
-# Quiet argv execution --------------------------------------------------------
-
 FAKE_AZ = r'''
 import json, os, sys, time
 args = sys.argv[1:]
@@ -624,8 +610,6 @@ def test_run_quiet_never_uses_a_shell(tmp_path):
     assert not marker.exists()
     assert Path(result["stdout"]).read_text().strip() == f"x; touch {marker}"
 
-
-# Sanitizer --------------------------------------------------------------------
 
 KNOWN_ENV = {"REPRO_SUBSCRIPTION_ID": SUB, "REPRO_TENANT_ID": TENANT,
              "REPRO_CLIENT_ID": CLIENT, "GITHUB_RUN_ID": "99",
@@ -787,8 +771,6 @@ def test_raw_result_file_is_private(tmp_path):
     repro_runner._write_json(tmp_path / "raw.json", {"a": 1}, private=True)
     assert stat.S_IMODE(os.stat(tmp_path / "raw.json").st_mode) == 0o600
 
-
-# Janitor --------------------------------------------------------------------
 
 def test_janitor_selects_only_expired_reproduction_groups():
     now = dt.datetime(2025, 1, 1, 12, tzinfo=dt.timezone.utc)

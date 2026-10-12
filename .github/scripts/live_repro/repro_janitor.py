@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
-"""Delete leftover live-reproduction resource groups (``live-repro-janitor.yml``).
+"""Deletes leftover live-reproduction resource groups whose expiresAt tag has passed.
 
-Every reproduction creates ``xea-repro-*`` tagged with ``expiresAt`` and
-deletes it with ``if: always()``. This scheduled backstop deletes groups
-with that reserved prefix whose ``expiresAt`` has passed, or whose tag is
-missing or unparseable. Command output goes to files under ``repro/raw``;
-the log shows only counts and group names.
+Each run deletes its own group, so this scheduled job is only the backstop.
 """
 
 import datetime as dt
@@ -29,7 +25,7 @@ def parse_time(value):
 
 
 def select_expired(groups, now=None):
-    """Names of reproduction groups that are past ``expiresAt``."""
+    """Names of reproduction groups past expiresAt (or with a missing or bad tag)."""
     now = now or dt.datetime.now(dt.timezone.utc)
     expired = []
     for group in groups or []:

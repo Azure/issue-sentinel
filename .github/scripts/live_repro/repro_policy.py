@@ -1,33 +1,18 @@
 # GENERATED FILE - DO NOT EDIT.
 # Vendored from x-engineering-agent `src/config/settings/reproduction.py` by
 # `scripts/sync_issue_sentinel_repro.py`; edit the source and re-run it.
-"""Live bug reproduction (BAMI sandbox) settings.
-
-Reproductions reuse the live-test setup: the same ``Azure/issue-sentinel``
-repository, BAMI OIDC login and dispatch code. Only the workflow differs.
-Commands come from a validated ``ReproSpec`` (see
-``x_engineering_agent.tools.live_tests.reproduction``); the allowlists and
-denylists below are the policy that validator enforces. Adding a command
-group, SKU or location here widens what issue-derived specs may run, so
-changes need the Agent owner and the owning team's approval.
-"""
+"""Settings for live bug reproduction in the BAMI sandbox."""
 
 import os
 
 
-# Reproductions always run live for repositories whose profile names a
-# reproduction workflow (``live_repro``).
-# Waiting label while a live reproduction runs.
+# Label shown while a live reproduction runs.
 LIVE_REPRO_WAITING_LABEL = "agent: reproducing"
-# Decision table (plan item C2e): a maintainer adds this label to queue a fix
-# although the live reproduction said "fixed in a later version" or "not
-# reproduced" (``submit_issue`` refuses the job otherwise).
+# Lets a maintainer queue a fix even if the reproduction said "fixed" or "not reproduced".
 LIVE_REPRO_OVERRIDE_LABEL = os.environ.get(
     "LIVE_REPRO_OVERRIDE_LABEL", "agent: fix without reproduction",
 )
-# Highest confidence a fix may carry when the live reproduction was blocked
-# (code-reading only); always kept below AGENT_DRAFT_CONFIDENCE_THRESHOLD so
-# the PR stays a draft with do-not-merge.
+# Below AGENT_DRAFT_CONFIDENCE_THRESHOLD, so a fix without a reproduction stays a draft.
 LIVE_REPRO_BLOCKED_CONFIDENCE_CAP = min(1.0, max(0.0, float(
     os.environ.get("LIVE_REPRO_BLOCKED_CONFIDENCE_CAP", "0.4")
 )))
@@ -56,10 +41,7 @@ REPRO_MAX_NAME_PLACEHOLDERS = 9
 REPRO_VERSIONS = ("reported", "latest", "dev")
 REPRO_DEFAULT_VERSIONS = ("latest", "dev")
 
-# Before/After on Agent PRs (plan item C2f): the PR-head ("after") re-run of
-# a reproduced issue's spec gates ready-for-review. A run that has not
-# finished this many minutes after dispatch counts as blocked (no infinite
-# wait); transient poll failures are retried this many rounds.
+# The PR-head re-run gates ready-for-review; a run slower than this counts as blocked.
 REPRO_AFTER_TIMEOUT_MINUTES = max(
     10, int(os.environ.get("LIVE_REPRO_AFTER_TIMEOUT_MINUTES", "180"))
 )
@@ -78,27 +60,20 @@ REPRO_DEFAULT_LOCATION = "westus3"
 
 # Cheap SKUs, sizes and tiers (compared case-insensitively).
 REPRO_ALLOWED_SKUS = frozenset(s.casefold() for s in (
-    # Storage
     "Standard_LRS", "Standard_ZRS", "Standard_GRS", "Premium_LRS",
-    # App Service plans
     "F1", "FREE", "D1", "SHARED", "B1", "B2", "S1", "P0v3", "P1v3", "Y1",
     "EP1", "FC1",
-    # Virtual machines, scale sets and flexible servers
     "Standard_B1s", "Standard_B1ms", "Standard_B2s", "Standard_B1ls",
     "Standard_DS1_v2", "Standard_D2s_v3", "Standard_D2s_v5",
-    # Generic tiers
     "Free", "Basic", "Standard", "Developer", "Consumption", "Burstable",
     "Standard_B1", "B_Standard_B1ms", "GP_Gen5_2", "S0", "F0",
-    # Networking
     "Standard_v2", "Basic_v2",
-    # Key Vault, Container Registry, Redis
     "standard", "premium", "C0",
-    # Cosmos DB, Event Hubs, Service Bus, Search, SignalR
     "Free_F1", "Standard_S1",
 ))
 
-# Azure CLI command groups (leading command tokens) a step may run. A longer
-# entry narrows a group to read-only commands, for example ``group show``.
+# Changing these allowlists widens what issue-derived commands may run, so get owner approval.
+# A longer entry narrows a group to read-only commands, for example "group show".
 REPRO_AZ_ALLOWED_COMMANDS = tuple(tuple(c.split()) for c in (
     "version",
     "group show", "group list", "group exists",
@@ -113,8 +88,7 @@ REPRO_AZ_ALLOWED_COMMANDS = tuple(tuple(c.split()) for c in (
     "private-dns", "afd", "cdn", "loganalytics",
 ))
 
-# Commands denied even inside an allowed group (prefix match), plus groups
-# that must never run (login, identity, RBAC, templates, extensions, ...).
+# Denied even inside an allowed group (prefix match), plus groups that must never run.
 REPRO_AZ_DENIED_COMMANDS = tuple(tuple(c.split()) for c in (
     "login", "logout", "account", "ad", "role", "rest", "config", "cloud",
     "extension", "upgrade", "self-test", "interactive", "find", "bicep",
@@ -144,11 +118,10 @@ REPRO_AZ_DENIED_COMMAND_TOKENS = frozenset({
     "authorization-rule",
 })
 
-# ``az rest`` is the one denied group with a narrow exception: GET on ARM
-# inside the run's resource group.
+# az rest is denied except GET on ARM inside the run's resource group.
 REPRO_AZ_REST_HOSTS = ("management.azure.com",)
 
-# Arguments that must never appear (also rejected when abbreviated).
+# Never allowed, even abbreviated.
 REPRO_AZ_DENIED_ARGUMENTS = frozenset({
     "--subscription", "--tenant", "--template-file", "--template-uri",
     "--template-spec", "--scripts", "--script", "--custom-data",
@@ -159,17 +132,16 @@ REPRO_AZ_DENIED_ARGUMENTS = frozenset({
     "--ssh-key-values", "--ssh-key-value", "--skip-authorization-header",
     "--secrets", "--secret-value",
 })
-# Arguments whose value must be the workflow-generated file ``{file}``.
+# Value must be the workflow-generated {file}.
 REPRO_AZ_FILE_ARGUMENTS = frozenset({
     "--file", "-f", "--file-path", "--local-path",
 })
-# Arguments whose value must be the workflow-generated ``{password}``.
+# Value must be the workflow-generated {password}.
 REPRO_AZ_PASSWORD_ARGUMENTS = frozenset({
     "--password", "--admin-password", "--administrator-login-password",
     "--admin-user-password", "--client-secret", "--secret",
 })
-# Real az flags that happen to be prefixes of a restricted flag above; they are
-# not treated as abbreviations (their values still go through every check).
+# Real az flags that look like abbreviations of a restricted flag above.
 REPRO_AZ_PREFIX_SAFE_ARGUMENTS = frozenset({
     "--admin-user",
 })
@@ -191,8 +163,7 @@ REPRO_AZ_OUTPUT_FORMATS = frozenset({
 
 # Container images may only come from these registries.
 REPRO_ALLOWED_IMAGE_HOSTS = ("mcr.microsoft.com",)
-# URLs and host names in arguments are allowed only for resources the run
-# creates: ``{nameN}`` followed by one of these Azure suffixes.
+# URLs may only point at resources the run creates: {nameN} plus one of these suffixes.
 REPRO_PLACEHOLDER_HOST_SUFFIXES = (
     ".blob.core.windows.net", ".file.core.windows.net",
     ".queue.core.windows.net", ".table.core.windows.net",
@@ -202,8 +173,7 @@ REPRO_PLACEHOLDER_HOST_SUFFIXES = (
     ".azconfig.io", ".search.windows.net", ".cognitiveservices.azure.com",
 )
 
-# Azure PowerShell: approved verbs and noun prefixes (after ``Az``). A tuple
-# narrows the verbs allowed for that prefix.
+# Allowed Azure PowerShell verbs per noun prefix; a tuple narrows the verbs.
 REPRO_PS_ALLOWED_VERBS = frozenset({
     "Get", "New", "Set", "Update", "Remove", "Add", "Start", "Stop",
     "Restart", "Test", "Enable", "Disable", "Move", "Reset", "Resize",
@@ -224,9 +194,7 @@ REPRO_PS_ALLOWED_NOUN_PREFIXES = {
     "ResourceGroup": ("Get",), "Resource": ("Get",),
     "ResourceProvider": ("Get",), "Location": ("Get",),
 }
-# PowerShell Gallery module that ships each noun prefix above. The workflow
-# installs exactly these modules (``Install-Module -RequiredVersion``), so a
-# new prefix needs its module here too.
+# The workflow installs exactly these modules; a new noun prefix needs its module here.
 REPRO_PS_NOUN_MODULES = {
     "Storage": "Az.Storage", "KeyVault": "Az.KeyVault",
     "VirtualNetwork": "Az.Network", "Network": "Az.Network",
@@ -251,7 +219,7 @@ REPRO_PS_NOUN_MODULES = {
     "Location": "Az.Resources",
 }
 REPRO_PS_ALLOWED_MODULES = frozenset(REPRO_PS_NOUN_MODULES.values())
-# Denied noun patterns (case-sensitive regular expressions on the noun).
+# Denied noun patterns (case-sensitive regexes).
 REPRO_PS_DENIED_NOUN_PATTERNS = (
     r"Key$", r"Keys$", r"Credential", r"Secret", r"Password", r"Token",
     r"Sas", r"ConnectionString", r"PublishingProfile", r"RunCommand",
@@ -269,8 +237,7 @@ REPRO_PS_DENIED_PARAMETERS = frozenset(p.casefold() for p in (
     "AccessToken", "SasToken", "StorageAccountKey", "ConnectionString",
     "FileUri", "SshKeyValue", "ShowSecret", "AzureRmContext",
     "AzureCredential",
-    # Common parameters the workflow controls (output streams, error
-    # handling, background jobs and variables).
+    # Common parameters the workflow controls.
     "Debug", "Verbose", "ErrorAction", "WarningAction", "InformationAction",
     "ProgressAction", "ErrorVariable", "WarningVariable",
     "InformationVariable", "OutVariable", "OutBuffer", "PipelineVariable",

@@ -1,20 +1,11 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    Trusted PowerShell half of live-repro-powershell.yml (plan item C2g).
+    Runs one allowlisted Az cmdlet for live-repro-powershell.yml by splatting checked parameters.
 
 .DESCRIPTION
-    Called only by repro_ps_runner.py as
-        pwsh -NoLogo -NoProfile -NonInteractive -File repro_ps.ps1 -Action <A> -RequestFile <json>
-    with a request file the runner wrote from the validated ReproSpec. There
-    is no -Command, no script text from the spec, no Invoke-Expression and no
-    command built from strings: Invoke resolves one allowlisted cmdlet with
-    Get-Command and splats a hashtable of checked parameter values into it.
-    Parameter values are bound as data, so `$(...)`, backticks, `;` or `|`
-    inside a value are never evaluated.
-
-    Exit codes: 0 success, 1 the cmdlet (or Azure call) failed, 2 the
-    request was rejected, 3 the module could not be imported.
+    Only repro_ps_runner.py calls this. Values are bound as data, never evaluated.
+    Exit codes: 0 success, 1 the cmdlet failed, 2 request rejected, 3 module import failed.
 #>
 [CmdletBinding()]
 param(
@@ -110,8 +101,7 @@ function ConvertTo-ParameterValue($Value, $Metadata) {
 function Read-Request {
     try {
         $text = Get-Content -LiteralPath $RequestFile -Raw -Encoding utf8
-        # -DateKind String (PowerShell 7.5+) keeps ISO-8601 strings such as
-        # the expiresAt tag or a -StartTime value as the exact text sent.
+        # -DateKind String (7.5+) keeps ISO-8601 strings exactly as sent.
         return $text | ConvertFrom-Json -AsHashtable -Depth 6 -DateKind String
     } catch {
         Stop-Rejected 'request file is not valid JSON'
@@ -231,8 +221,7 @@ function Invoke-ReproStep($Request) {
     foreach ($key in @($parameters.Keys)) {
         if ($key -cnotmatch $ParameterPattern) { Stop-Rejected 'invalid parameter name' }
         if ($denied.Contains($key)) { Stop-Rejected "-$key is not allowed" }
-        # Exact names and aliases only: PowerShell would otherwise accept a
-        # unique prefix (for example -DefaultP for -DefaultProfile).
+        # Exact names only; PowerShell would otherwise accept a unique prefix like -DefaultP.
         if (-not $lookup.ContainsKey($key)) { Stop-Rejected "-$key is not a parameter of $cmdlet" }
         $metadata = $lookup[$key]
         foreach ($name in @($metadata.Name) + @($metadata.Aliases)) {

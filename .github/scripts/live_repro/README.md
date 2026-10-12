@@ -1,8 +1,7 @@
 # Live reproduction workflows
 
 The X Engineering Agent dispatches these workflows to reproduce Azure CLI,
-CLI extension and Azure PowerShell issues from a validated ReproSpec (plan
-items C2c and C2g). This repository is the source of truth for the
+CLI extension and Azure PowerShell issues from a validated ReproSpec. This repository is the source of truth for the
 workflows and the trusted runner scripts. The tests in `tests/live_repro`
 check them; the `live-repro-tests.yml` workflow runs those tests.
 
@@ -16,9 +15,9 @@ Paths below are relative to the repository root.
 | `.github/scripts/live_repro/repro_runner.py` | Trusted runner: re-validates the spec against `spec_hash`, installs the CLI version, manages the resource group, runs argv steps without a shell, writes all output to files. |
 | `.github/scripts/live_repro/repro_ps_runner.py` | PowerShell runner: reuses `repro_runner.py`'s verification, step loop and result files; installs `Az.<X>` with `Install-Module -RequiredVersion` (builds it from source for `dev`; imports the verified `build-pr` output for `pr`), signs in with a federated `Connect-AzAccount`. |
 | `.github/scripts/live_repro/repro_ps.ps1` | Trusted pwsh script run with `-File` (never `-Command`): installs modules, signs in, manages the resource group and calls one allowlisted cmdlet by splatting a checked parameter hashtable. |
-| `.github/scripts/live_repro/repro_sanitize.py` | Builds `repro.redacted.json`; the module docstring documents the result schema the Agent consumes (C2d). |
+| `.github/scripts/live_repro/repro_sanitize.py` | Builds `repro.redacted.json`; the comment above `RESULT_FILE_NAME` documents the result schema the Agent consumes. |
 | `.github/scripts/live_repro/repro_janitor.py` | Janitor logic. |
-| `.github/scripts/live_repro/repro_spec.py`, `repro_policy.py`, `repro_sensitive_data.py` | **Generated** stdlib copies of the Agent's C2b validator, its policy and `src/security/sensitive_data.py`. Do not edit (see below). |
+| `.github/scripts/live_repro/repro_spec.py`, `repro_policy.py`, `repro_sensitive_data.py` | **Generated** stdlib copies of the Agent's ReproSpec validator, its policy and `src/security/sensitive_data.py`. Do not edit (see below). |
 | `.github/workflows/live-repro-tests.yml` | Runs `tests/live_repro` on pull requests and pushes to `main` that touch these files. No secrets. |
 
 ## Security model
@@ -49,9 +48,9 @@ Paths below are relative to the repository root.
   the reproduce job (trusted `main`); `pr` uses the same build, run in
   `build-pr` (below).
 - Matrix: the spec's `versions` (`reported`, `latest`, `dev`), or `dev` +
-  `pr` when `pr_number` is set (Before/After, plan item C2f).
+  `pr` when `pr_number` is set (Before/After).
 
-### PR-head mode (`pr_number`, C2f)
+### PR-head mode (`pr_number`)
 
 The PR is Agent-authored on the Agent's fork, but its code is still treated
 as untrusted:
