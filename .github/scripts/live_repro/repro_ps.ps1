@@ -110,7 +110,9 @@ function ConvertTo-ParameterValue($Value, $Metadata) {
 function Read-Request {
     try {
         $text = Get-Content -LiteralPath $RequestFile -Raw -Encoding utf8
-        return $text | ConvertFrom-Json -AsHashtable -Depth 6
+        # -DateKind String (PowerShell 7.5+) keeps ISO-8601 strings such as
+        # the expiresAt tag or a -StartTime value as the exact text sent.
+        return $text | ConvertFrom-Json -AsHashtable -Depth 6 -DateKind String
     } catch {
         Stop-Rejected 'request file is not valid JSON'
     }
