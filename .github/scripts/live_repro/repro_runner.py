@@ -80,6 +80,8 @@ EXTENSIONS_REPOSITORY = "Azure/azure-cli-extensions"
 DEV_REFS = {CLI_REPOSITORY: "dev", EXTENSIONS_REPOSITORY: "main"}
 INSTALL_TIMEOUT_SECONDS = 25 * 60
 LIFECYCLE_TIMEOUT_SECONDS = 20 * 60
+# Written by ``rg-create`` before it creates the group (see ``group_requested``).
+GROUP_MARKER = RAW_DIR / "lifecycle" / "group-requested"
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _PR_NUMBER = re.compile(r"^[1-9]\d{0,8}$")
 _HEAD_SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -630,10 +632,30 @@ def expires_at(now=None, hours=None):
     return (now + dt.timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def mark_group_requested(group):
+    """Record that ``rg-create`` was attempted for ``group`` in this job."""
+    GROUP_MARKER.parent.mkdir(parents=True, exist_ok=True)
+    GROUP_MARKER.write_text(group + "\n", encoding="utf-8")
+
+
+def group_requested(group):
+    """Whether ``rg-create`` was attempted for ``group`` in this job.
+
+    ``rg-delete`` always runs; when the job failed before ``rg-create``
+    (for example at Azure login) there is nothing to delete and no session
+    to delete it with.
+    """
+    try:
+        return GROUP_MARKER.read_text(encoding="utf-8").strip() == group
+    except OSError:
+        return False
+
+
 def cmd_rg_create(args):
     """Create the per-run resource group tagged with ``expiresAt``."""
     spec = verify_from_env()
     group = resource_group_for(spec)
+    mark_group_requested(group)
     result = run_quiet([
         system_az(), "group", "create", "--name", group,
         "--location", spec["location"], "--tags",
@@ -654,6 +676,9 @@ def cmd_rg_delete(args):
         print("Spec not verified; nothing was created.")
         return 0
     group = resource_group_for(spec)
+    if not group_requested(group):
+        print("No resource group was created in this job; nothing to delete.")
+        return 0
     exists = run_quiet([system_az(), "group", "exists", "--name", group],
                        RAW_DIR / "lifecycle" / "group-exists", timeout=300)
     text = Path(exists["stdout"]).read_text(encoding="utf-8").strip().lower()

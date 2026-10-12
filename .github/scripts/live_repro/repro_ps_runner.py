@@ -9,7 +9,7 @@ installed, how Azure sign-in works and how a step is launched:
 - ``install``: ``Install-Module Az.<X> -RequiredVersion <v>`` for the
   validated module (``reported``: the spec's ``reported_version``;
   ``latest``: the newest gallery version, resolved first and then pinned),
-  a ``dotnet msbuild build.proj /p:TargetModule=<X>`` build of the checked
+  a ``tools/BuildScripts/BuildModules.ps1 -TargetModule <X>`` build of the checked
   out ``main`` source (``dev``) or the verified PR build (``pr``, below);
 - ``connect``: federated ``Connect-AzAccount`` with a GitHub OIDC token
   fetched here (no secret, no PAT; the token reaches pwsh only through the
@@ -73,6 +73,7 @@ DEV_REF = "main"
 PS_SCRIPT = Path(__file__).resolve().parent / "repro_ps.ps1"
 REQUEST_DIR = RAW_DIR / "requests"
 BUILD_OUTPUT_DIR = SOURCE_DIR / "artifacts" / "Debug"
+BUILD_SCRIPT = "tools/BuildScripts/BuildModules.ps1"
 # PR build artifact (``build-pr`` job -> ``repro-pr-module``) and the
 # directory the reproduce job extracts it to.
 PR_MODULE_DIR = WORKSPACE / "pr-module"
@@ -291,9 +292,12 @@ def build_module(spec, log_dir=None):
     """Build the module under test from ``repro/src``; return its directory."""
     log_dir = Path(log_dir or RAW_DIR / "install")
     short = short_module_name(spec["module"])
+    # ``build.proj``'s default target ignores ``TargetModule`` (it builds
+    # every module), so call the script it wraps with the one module.
     result = run_quiet(
-        ["dotnet", "msbuild", "build.proj", f"/p:TargetModule={short}",
-         "/p:Configuration=Debug", "-nologo", "-verbosity:minimal"],
+        ["pwsh", "-NoLogo", "-NoProfile", "-NonInteractive",
+         "-File", BUILD_SCRIPT, "-RepoRoot", str(SOURCE_DIR.resolve()),
+         "-Configuration", "Debug", "-TargetModule", short],
         log_dir / "build", timeout=BUILD_TIMEOUT_SECONDS,
         cwd=SOURCE_DIR, extra_env=_PS_EXTRA_ENV,
     )
@@ -421,8 +425,8 @@ def cmd_build(args):
     if _source_sha(RAW_DIR / "build" / "git-sha") != head_sha:
         print("::error::The checkout is not the requested PR head commit.")
         return 1
-    if not (SOURCE_DIR / "build.proj").is_file():
-        print("::error::PR head source checkout is missing build.proj.")
+    if not (SOURCE_DIR / BUILD_SCRIPT).is_file():
+        print(f"::error::PR head source checkout is missing {BUILD_SCRIPT}.")
         return 1
     if build_module(spec, RAW_DIR / "build") is None:
         print(f"::error::Building {spec['module']} from the PR head failed.")
@@ -457,7 +461,7 @@ def _install_pr_module(spec, info):
 
 
 def _install_dev_module(spec, info):
-    if not (SOURCE_DIR / "build.proj").is_file():
+    if not (SOURCE_DIR / BUILD_SCRIPT).is_file():
         _write_json(INSTALL_FILE, {**info, "error": "source checkout missing"})
         print("::error::Source checkout is missing.")
         return False
@@ -564,8 +568,10 @@ def cmd_connect(args):
 def cmd_rg_create(args):
     """Create the per-run resource group tagged with ``expiresAt``."""
     spec = verify_from_env()
+    group = runner.resource_group_for(spec)
+    runner.mark_group_requested(group)
     result = run_pwsh("NewGroup", {
-        "name": runner.resource_group_for(spec),
+        "name": group,
         "location": spec["location"],
         "tags": {
             policy.REPRO_EXPIRES_TAG: runner.expires_at(),
@@ -585,9 +591,13 @@ def cmd_rg_delete(args):
     except VerificationError:
         print("Spec not verified; nothing was created.")
         return 0
+    group = runner.resource_group_for(spec)
+    if not runner.group_requested(group):
+        print("No resource group was created in this job; nothing to delete.")
+        return 0
     # The steps may have outlived the first token; sign in again (best effort).
     connect(log_name="reconnect")
-    result = run_pwsh("RemoveGroup", {"name": runner.resource_group_for(spec)},
+    result = run_pwsh("RemoveGroup", {"name": group},
                       RAW_DIR / "lifecycle" / "group-delete",
                       timeout=LIFECYCLE_TIMEOUT_SECONDS)
     if result["exit_code"] == 0:
