@@ -1,0 +1,319 @@
+name: Live Repro (Azure PowerShell)
+run-name: Live Repro (${{ inputs.issue }} @ ${{ inputs.spec_hash }}${{ inputs.pr_number != '' && format(' PR {0} head {1}', inputs.pr_number, inputs.pr_head_sha) || '' }})
+
+# Versioned template: the source of truth lives in x-engineering-agent under
+# deploy/issue-sentinel/ (see its README for how to sync it here).
+#
+# Dispatched by the X Engineering Agent (`dispatch_reproduction`, plan item
+# C2g) for Azure/azure-powershell issues via:
+#   POST /repos/Azure/issue-sentinel/actions/workflows/live-repro-powershell.yml/dispatches
+#
+# Runs a validated pwsh-az ReproSpec (allowlisted Az cmdlets with parameter
+# hashtables derived from an issue) against the reported, latest and dev
+# module in a throwaway resource group in the BAMI live-test subscription.
+# Same guarantees as live-repro.yml:
+#   - no Key Vault / GitHub PAT step and no client secret: sign-in is a
+#     federated Connect-AzAccount with this job's GitHub OIDC token;
+#   - permissions are id-token: write + contents: read only;
+#   - the trusted runner re-validates the spec and its hash before anything
+#     runs; modules are installed with Install-Module -RequiredVersion and
+#     each cmdlet is called by repro_ps.ps1 with a splatted, checked
+#     parameter hashtable (no script text, no Invoke-Expression);
+#   - ALL command output is redirected to files on the runner; the log shows
+#     only exit codes and verdicts;
+#   - a sanitize step (no Azure credentials) redacts with the rules of
+#     x_engineering_agent.security.sensitive_data and only
+#     repro.redacted.json is uploaded;
+#   - the per-run resource group is tagged with expiresAt and always deleted;
+#     live-repro-janitor.yml removes anything left behind.
+#
+# PR-head re-runs (pr_number + pr_head_sha, plan item C2f) re-run the SAME
+# verified spec on dev (before) and on the PR head (after), with the trust
+# model of live-repro.yml: the PR is authored by the X Engineering Agent on
+# the Agent's own fork. The prepare job only accepts an open PR against
+# Azure/azure-powershell whose head repository is the Agent fork configured
+# in REPO_PROFILES and whose head commit equals pr_head_sha (40 hex). The
+# build-pr job checks out exactly that commit (persist-credentials: false)
+# and builds only the module under test with contents: read only:
+# no secrets, no id-token, no Azure sign-in. It uploads the build output as
+# module.tar.gz plus a SHA-256 manifest. The reproduce job never checks out
+# PR code: it verifies the manifest, extracts the archive and first imports
+# the PR's module in the "Run ReproSpec" step, the sandbox designed to run
+# cmdlets with the BAMI login.
+# Never interpolate ${{ inputs.* }} into run: scripts; pass values via env.
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Issue the spec reproduces (Azure/azure-powershell#<number>)"
+        required: true
+        type: string
+      spec:
+        description: "Canonical ReproSpec JSON (validated again by the runner)"
+        required: true
+        type: string
+      spec_hash:
+        description: "SHA-256 of the spec input; the run refuses any mismatch"
+        required: true
+        type: string
+      pr_number:
+        description: "Optional PR number: re-run the spec on dev (before) and the PR head (after)"
+        required: false
+        type: string
+        default: ""
+      pr_head_sha:
+        description: "PR head commit (40 hex) to re-run; required with pr_number"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: live-repro-ps-${{ inputs.issue }}-${{ inputs.spec_hash }}-${{ inputs.pr_number }}-${{ inputs.pr_head_sha }}
+  cancel-in-progress: false
+
+env:
+  REPRO_ISSUE: ${{ inputs.issue }}
+  REPRO_SPEC: ${{ inputs.spec }}
+  REPRO_SPEC_HASH: ${{ inputs.spec_hash }}
+  REPRO_PR_NUMBER: ${{ inputs.pr_number }}
+  REPRO_PR_HEAD_SHA: ${{ inputs.pr_head_sha }}
+  RUNNER_SCRIPTS: sentinel/.github/scripts/live_repro
+
+jobs:
+  prepare:
+    name: Verify ReproSpec
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      versions: ${{ steps.verify.outputs.versions }}
+      step_timeout_minutes: ${{ steps.verify.outputs.step_timeout_minutes }}
+      source_repo: ${{ steps.verify.outputs.source_repo }}
+      dev_ref: ${{ steps.verify.outputs.dev_ref }}
+      pr_repo: ${{ steps.verify.outputs.pr_repo }}
+      pr_ref: ${{ steps.verify.outputs.pr_ref }}
+    steps:
+      - name: Checkout trusted runner scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: sentinel
+          persist-credentials: false
+          sparse-checkout: .github/scripts/live_repro
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Re-validate spec against spec_hash (and the Agent PR head)
+        id: verify
+        env:
+          REPRO_GITHUB_TOKEN: ${{ github.token }}
+        run: python3 "$RUNNER_SCRIPTS/repro_ps_runner.py" verify
+
+  build-pr:
+    name: Build PR head module (no Azure credentials)
+    needs: prepare
+    if: inputs.pr_number != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted runner scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: sentinel
+          persist-credentials: false
+          sparse-checkout: .github/scripts/live_repro
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Checkout the verified PR head (Agent fork)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ needs.prepare.outputs.pr_repo }}
+          ref: ${{ needs.prepare.outputs.pr_ref }}
+          path: repro/src
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up .NET (PR module build)
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Build the module under test (output to files)
+        timeout-minutes: 50
+        run: python3 "$RUNNER_SCRIPTS/repro_ps_runner.py" build
+
+      - name: Upload PR head module build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: repro-pr-module
+          path: repro/pr-module/
+          if-no-files-found: error
+          retention-days: 1
+
+  reproduce:
+    name: Reproduce (${{ matrix.version }})
+    needs: [prepare, build-pr]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      id-token: write   # federated Connect-AzAccount to BAMI
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        version: ${{ fromJSON(needs.prepare.outputs.versions) }}
+    env:
+      REPRO_VERSION: ${{ matrix.version }}
+    steps:
+      - name: Checkout trusted runner scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: sentinel
+          persist-credentials: false
+          sparse-checkout: .github/scripts/live_repro
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Checkout Azure PowerShell source (dev)
+        if: matrix.version == 'dev'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ needs.prepare.outputs.source_repo }}
+          ref: ${{ needs.prepare.outputs.dev_ref }}
+          path: repro/src
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up .NET (dev module build)
+        if: matrix.version == 'dev'
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Download PR head module build (built without credentials)
+        if: matrix.version == 'pr'
+        continue-on-error: true   # install records the failure as the result
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: repro-pr-module
+          path: repro/pr-module
+
+      - name: Install Az module version (output to files)
+        timeout-minutes: 60
+        run: python3 "$RUNNER_SCRIPTS/repro_ps_runner.py" install
+
+      - name: Azure login (BAMI tenant, federated Connect-AzAccount)
+        timeout-minutes: 5
+        env:
+          REPRO_CLIENT_ID: ${{ secrets.BAMI_CLIENT_ID }}
+          REPRO_TENANT_ID: ${{ secrets.BAMI_TENANT_ID }}
+          REPRO_SUBSCRIPTION_ID: ${{ secrets.BAMI_SUBSCRIPTION_ID }}
+        run: python3 "$RUNNER_SCRIPTS/repro_ps_runner.py" connect
+
+      - name: Create per-run resource group (expiresAt tag)
+        timeout-minutes: 10
+        run: python3 "$RUNNER_SCRIPTS/repro_ps_runner.py" rg-create
+
+      - name: Run ReproSpec cmdlets (splatted parameters, output to files)
+        timeout-minutes: ${{ fromJSON(needs.prepare.outputs.step_timeout_minutes) }}
+        env:
+          REPRO_SUBSCRIPTION_ID: ${{ secrets.BAMI_SUBSCRIPTION_ID }}
+        run: python3 "$RUNNER_SCRIPTS/repro_ps_runner.py" run
+
+      - name: Delete per-run resource group
+        if: always()
+        timeout-minutes: 25
+        env:
+          REPRO_CLIENT_ID: ${{ secrets.BAMI_CLIENT_ID }}
+          REPRO_TENANT_ID: ${{ secrets.BAMI_TENANT_ID }}
+          REPRO_SUBSCRIPTION_ID: ${{ secrets.BAMI_SUBSCRIPTION_ID }}
+        run: python3 "$RUNNER_SCRIPTS/repro_ps_runner.py" rg-delete
+
+      - name: Sign out of Azure
+        if: always()
+        timeout-minutes: 5
+        run: python3 "$RUNNER_SCRIPTS/repro_ps_runner.py" logout
+
+      - name: Sanitize output (no Azure credentials)
+        if: always()
+        timeout-minutes: 5
+        env:
+          REPRO_SUBSCRIPTION_ID: ${{ secrets.BAMI_SUBSCRIPTION_ID }}
+          REPRO_TENANT_ID: ${{ secrets.BAMI_TENANT_ID }}
+          REPRO_CLIENT_ID: ${{ secrets.BAMI_CLIENT_ID }}
+        run: python3 "$RUNNER_SCRIPTS/repro_sanitize.py" --runner powershell version
+
+      - name: Upload redacted result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: repro-redacted-${{ matrix.version }}
+          path: repro/out/repro.redacted.json
+          if-no-files-found: error
+          retention-days: 14
+
+  report:
+    name: Merge redacted results
+    needs: [prepare, reproduce]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted runner scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: sentinel
+          persist-credentials: false
+          sparse-checkout: .github/scripts/live_repro
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Download per-version results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: repro-redacted-*
+          path: parts
+
+      - name: Merge and re-sanitize
+        run: python3 "$RUNNER_SCRIPTS/repro_sanitize.py" --runner powershell merge --parts parts --out result/repro.redacted.json
+
+      - name: Upload repro.redacted.json
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: repro-redacted
+          path: result/repro.redacted.json
+          if-no-files-found: error
+          retention-days: 14
