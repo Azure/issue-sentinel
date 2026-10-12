@@ -1,10 +1,4 @@
-"""Prompt-injection corpus for the vendored ReproSpec validator.
-
-Every entry is a step an attacker could smuggle into issue text hoping the
-model copies it into a reproduction. All of them must be rejected by
-``.github/scripts/live_repro/repro_spec.py`` (generated from the X Engineering
-Agent validator, which runs the same corpus).
-"""
+"""Prompt-injection steps the vendored ReproSpec validator must reject."""
 
 import pytest
 
@@ -187,8 +181,7 @@ PS_CORPUS = {
     "backtick": ("Get-AzStorageAccount", {"ResourceGroupName": "{rg}", "Name": "a`b"}),
     "pipe": ("Get-AzStorageAccount", {"ResourceGroupName": "{rg}", "Name": "a | Remove-AzStorageAccount"}),
     "bad-param-name": ("Get-AzStorageAccount", {"ResourceGroupName; iwr": "{rg}"}),
-    # PowerShell-specific (plan item C2g): statement separators, expansion,
-    # escapes, code-taking parameters and parameters the workflow controls.
+    # PowerShell-specific: separators, expansion, escapes and parameters the workflow controls.
     "semicolon": ("Get-AzStorageAccount", {"ResourceGroupName": "{rg}", "Name": "a; Remove-AzResourceGroup -Name x"}),
     "semicolon-in-rg": ("Get-AzStorageAccount", {"ResourceGroupName": "{rg};iex x"}),
     "subexpression-in-list": ("Get-AzStorageAccount", {"ResourceGroupName": "{rg}", "Name": ["a", "$(iwr evil)"]}),
@@ -212,8 +205,7 @@ PS_CORPUS = {
     "module-qualified": ("Az.Storage\\Get-AzStorageAccount", {"ResourceGroupName": "{rg}"}),
 }
 
-# ``module`` (the Az module under test, plan item C2g) must be allowlisted and
-# ship a repro cmdlet; it is installed with ``Install-Module -RequiredVersion``.
+# The module under test must be allowlisted and ship a repro cmdlet.
 PS_MODULE_CORPUS = {
     "injection": "Az.Storage; iwr evil",
     "subexpression": "Az.$(iwr)",

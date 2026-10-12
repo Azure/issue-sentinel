@@ -1,11 +1,4 @@
-"""Trusted PowerShell runner of the issue-sentinel live reproduction
-(plan item C2g).
-
-``repro_ps_runner.py`` reuses the C2c runner (verification, step loop,
-result files) and sanitizer; ``repro_ps.ps1`` calls one allowlisted cmdlet
-by splatting a checked parameter hashtable. The pwsh tests run the real
-script against a fake ``Az.Storage`` module and are skipped without pwsh.
-"""
+"""Tests for the PowerShell live reproduction runner; pwsh tests skip without pwsh."""
 
 import hashlib
 import io
@@ -96,8 +89,7 @@ def _set_env(monkeypatch, env):
         monkeypatch.setenv(key, value)
 
 
-# Vendored validator module rules ---------------------------------------------
-# Parity with the Agent's C2b validator is checked in the Agent repository.
+# Parity with the Agent's validator is checked in the Agent repository.
 
 @pytest.mark.parametrize("module", list(PS_MODULE_CORPUS.values()),
                          ids=list(PS_MODULE_CORPUS))
@@ -121,8 +113,6 @@ def test_vendored_cmdlet_module_is_stable_on_corpus(cmdlet):
     module = repro_spec.ps_cmdlet_module(cmdlet)
     assert module is None or module in settings.REPRO_PS_NOUN_MODULES.values()
 
-
-# Dispatch re-verification ----------------------------------------------------
 
 def test_verify_accepts_exact_powershell_dispatch():
     inputs = _dispatch()
@@ -267,8 +257,6 @@ def test_verify_command_writes_outputs_and_rejects_quietly(tmp_path, monkeypatch
     assert inputs["spec"] not in capsys.readouterr().out
 
 
-# Install ---------------------------------------------------------------------
-
 def test_install_request_pins_the_module_under_test():
     spec = repro_ps_runner.verify_from_env(_env(_dispatch()))
     reported = repro_ps_runner.install_request(spec, "reported")["modules"]
@@ -381,8 +369,6 @@ def test_install_dev_builds_the_module_from_source(tmp_path, monkeypatch):
     assert info["source_sha"] == "a" * 40
     assert info["module_path"].endswith("artifacts/Debug/Az.Storage")
 
-
-# PR-head build (build-pr job) and install (reproduce job) ---------------------
 
 def _fake_build_output(tmp_path, modules=("Az.Accounts", "Az.Storage")):
     debug = tmp_path / "repro" / "src" / "artifacts" / "Debug"
@@ -569,8 +555,6 @@ def test_install_failure_is_recorded(tmp_path, monkeypatch):
     assert info["error"] == "source checkout missing"
 
 
-# Federated sign-in -------------------------------------------------------------
-
 class _Response:
     def __init__(self, body):
         self.body = body
@@ -700,8 +684,6 @@ def test_janitor_covers_powershell_resource_groups():
         {"name": group, "tags": {settings.REPRO_EXPIRES_TAG: past}},
     ]) == [group]
 
-
-# pwsh invocation ---------------------------------------------------------------
 
 def test_pwsh_argv_runs_the_trusted_file_never_a_command(tmp_path):
     argv = repro_ps_runner.pwsh_argv("Invoke", tmp_path / "req.json")
@@ -856,8 +838,6 @@ def test_run_without_install_records_an_error(tmp_path, monkeypatch):
     assert raw["status"] == "error" and raw["error"] == "module not installed"
 
 
-# Sanitizer (shared with C2c) ----------------------------------------------------
-
 def _sanitized(tmp_path, monkeypatch, mode="reproduced"):
     monkeypatch.chdir(tmp_path)
     inputs = _dispatch()
@@ -930,8 +910,6 @@ def test_merge_and_sanitize_cli_with_powershell_runner(tmp_path, monkeypatch, ca
     assert repro_sanitize.main(["merge", "--parts", "p", "--out", "o"]) == 1
     assert SUB not in capsys.readouterr().out
 
-
-# repro_ps.ps1 against a fake Az.Storage module --------------------------------
 
 FAKE_MODULE = r'''
 function New-AzStorageAccount {
@@ -1032,8 +1010,7 @@ def test_ps1_splats_values_as_literal_data(fake_home, tmp_path):
 def test_ps1_keeps_iso_date_strings_as_sent(fake_home):
     """ConvertFrom-Json would turn these into culture-formatted DateTimes.
 
-    That broke the ``expiresAt`` tag (the janitor then treats the group as
-    already expired) and rejected date-valued cmdlet parameters.
+    That broke the expiresAt tag and date-valued cmdlet parameters.
     """
     code, out, err = _invoke(parameters={
         "ResourceGroupName": "2026-10-12T10:41:00Z", "Name": "n1",

@@ -1,40 +1,11 @@
 name: Live Repro (Azure CLI)
 run-name: Live Repro (${{ inputs.issue }} @ ${{ inputs.spec_hash }}${{ inputs.pr_number != '' && format(' PR {0} head {1}', inputs.pr_number, inputs.pr_head_sha) || '' }})
 
-# Versioned template: the source of truth lives in x-engineering-agent under
-# deploy/issue-sentinel/ (see its README for how to sync it here).
-#
-# Dispatched by the X Engineering Agent (`dispatch_reproduction`, plan item
-# C2b/C2c) via:
-#   POST /repos/Azure/issue-sentinel/actions/workflows/live-repro.yml/dispatches
-#
-# Runs a validated ReproSpec (argv-only Azure CLI steps derived from an issue)
-# against the reported, latest and dev CLI in a throwaway resource group in
-# the BAMI live-test subscription. This repository is PUBLIC and the commands
-# come from issue text, so unlike live-test.yml:
-#   - no Key Vault / GitHub PAT step: nothing is written back to GitHub;
-#   - permissions are id-token: write + contents: read only;
-#   - the trusted runner re-validates the spec and its hash before anything
-#     runs, and executes steps as argv lists without a shell;
-#   - ALL command output is redirected to files on the runner; the log shows
-#     only exit codes and verdicts;
-#   - a sanitize step (no Azure credentials) redacts with the rules of
-#     x_engineering_agent.security.sensitive_data and only
-#     repro.redacted.json is uploaded;
-#   - the per-run resource group is tagged with expiresAt and always deleted;
-#     live-repro-janitor.yml removes anything left behind.
-#
-# PR-head re-runs (pr_number + pr_head_sha, plan item C2f) re-run the SAME
-# verified spec on dev (before) and on the PR head (after). Trust model: the
-# PR is authored by the X Engineering Agent on the Agent's own fork, the same
-# party whose specs this workflow already runs. The prepare job only accepts
-# an open PR against the spec's repository whose head repository is the Agent
-# fork configured in REPO_PROFILES and whose head commit equals pr_head_sha
-# (40 hex). The build-pr job checks out exactly that commit
-# (persist-credentials: false) and builds wheels with contents: read only:
-# no secrets, no id-token. The reproduce job only installs those wheels
-# (no PR code runs) and executes the PR's CLI solely in the "Run ReproSpec"
-# step, the sandbox designed to run the CLI with the BAMI login.
+# Reproduces Azure CLI issues for the X Engineering Agent in a throwaway BAMI resource group.
+# Steps come from public issue text; read .github/scripts/live_repro/README.md before changing this.
+# PR-head re-runs only accept an open PR from the Agent's own fork whose head is pr_head_sha.
+# build-pr checks it out with persist-credentials: false and builds wheels with no secrets, no id-token;
+# the reproduce job only installs those wheels and runs the PR's CLI in "Run ReproSpec".
 # Never interpolate ${{ inputs.* }} into run: scripts; pass values via env.
 
 on:

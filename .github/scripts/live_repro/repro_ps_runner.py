@@ -1,45 +1,5 @@
 #!/usr/bin/env python3
-"""Trusted runner for ``live-repro-powershell.yml`` (Azure/issue-sentinel).
-
-The PowerShell counterpart of ``repro_runner.py`` (plan item C2g). It reuses
-that runner's verification, quiet process execution, step loop, result
-files and resource group naming, and differs only in how the tool is
-installed, how Azure sign-in works and how a step is launched:
-
-- ``install``: ``Install-Module Az.<X> -RequiredVersion <v>`` for the
-  validated module (``reported``: the spec's ``reported_version``;
-  ``latest``: the newest gallery version, resolved first and then pinned),
-  a ``tools/BuildScripts/BuildModules.ps1 -TargetModule <X>`` build of the checked
-  out ``main`` source (``dev``) or the verified PR build (``pr``, below);
-- ``connect``: federated ``Connect-AzAccount`` with a GitHub OIDC token
-  fetched here (no secret, no PAT; the token reaches pwsh only through the
-  child environment and is never printed);
-- ``run``: one ``pwsh -NoProfile -NonInteractive -File repro_ps.ps1``
-  process per step. The step's validated parameter hashtable is written to
-  a private request file and splatted into the cmdlet by ``repro_ps.ps1``;
-  there is no ``-Command``, no script text and no ``Invoke-Expression``.
-
-All output goes to files under ``repro/raw``; ``repro_sanitize.py
---runner powershell`` writes the only uploaded file, ``repro.redacted.json``.
-
-PR-head re-runs (``pr_number`` + ``pr_head_sha``, plan item C2f) use the
-trust model of ``repro_runner.py``: ``verify`` only accepts an open PR on
-Azure/azure-powershell from the configured Agent fork whose head is exactly
-``pr_head_sha``. ``build`` runs in a separate job with no Azure credentials,
-no secrets and no OIDC permission: it builds the module under test from that
-commit (running the PR's build code) and packs the build output into
-``module.tar.gz`` plus a SHA-256 manifest. In the reproduce job, ``install``
-never checks out or runs PR code: it verifies the manifest, extracts the
-archive with path and file-type checks and reads the module version from the
-``.psd1`` text. The PR module is first imported by ``repro_ps.ps1`` in the
-``run`` step, the sandbox designed to run cmdlets with the BAMI login.
-
-Environment: as ``repro_runner.py`` (including ``REPRO_PR_HEAD_SHA`` and,
-for ``verify``, ``REPRO_GITHUB_TOKEN``), plus ``REPRO_CLIENT_ID``,
-``REPRO_TENANT_ID``, ``REPRO_SUBSCRIPTION_ID`` (``connect``, ``rg-delete``)
-and ``ACTIONS_ID_TOKEN_REQUEST_URL`` / ``ACTIONS_ID_TOKEN_REQUEST_TOKEN``
-(set by GitHub when the job has ``id-token: write``).
-"""
+"""Trusted runner for live-repro-powershell.yml, the PowerShell twin of repro_runner.py."""
 
 import argparse
 import json
@@ -74,8 +34,7 @@ PS_SCRIPT = Path(__file__).resolve().parent / "repro_ps.ps1"
 REQUEST_DIR = RAW_DIR / "requests"
 BUILD_OUTPUT_DIR = SOURCE_DIR / "artifacts" / "Debug"
 BUILD_SCRIPT = "tools/BuildScripts/BuildModules.ps1"
-# PR build artifact (``build-pr`` job -> ``repro-pr-module``) and the
-# directory the reproduce job extracts it to.
+# Built PR module artifact and where the reproduce job extracts it.
 PR_MODULE_DIR = WORKSPACE / "pr-module"
 PR_MODULE_ARCHIVE = "module.tar.gz"
 PR_MODULE_MANIFEST = "manifest.json"
@@ -84,7 +43,7 @@ PR_ARCHIVE_MAX_MEMBERS = 20_000
 PR_ARCHIVE_MAX_BYTES = 2 * 1024 ** 3
 OIDC_AUDIENCE = "api://AzureADTokenExchange"
 BASE_MODULES = ("Az.Accounts", "Az.Resources")
-# Az context and MSAL token caches removed by ``logout``.
+# Az context and token caches that logout removes.
 AZ_CACHE_DIRS = (".Azure", ".IdentityService", ".local/.IdentityService")
 INSTALL_TIMEOUT_SECONDS = 15 * 60
 BUILD_TIMEOUT_SECONDS = 45 * 60
@@ -102,15 +61,10 @@ _PS_EXTRA_ENV = {
 }
 
 
-# Spec verification -----------------------------------------------------------
-
 def verify_spec(spec_text, spec_hash, issue, pr_number="", pr_head_sha=""):
-    """Re-validate a dispatched ``pwsh-az`` spec; return the normalized spec.
+    """Re-validate a dispatched pwsh-az spec and return the normalized spec.
 
-    Same checks as ``repro_runner.verify_dispatch`` (a PR-head re-run needs
-    ``pr_head_sha``); additionally only ``pwsh-az`` specs with cmdlet steps
-    run here, and a PR-head re-run needs an Azure/azure-powershell issue and
-    a configured Agent fork (``verify_pull_request`` checks the PR itself).
+    PR-head re-runs also need an azure-powershell issue and a configured Agent fork.
     """
     pr_number = (pr_number or "").strip()
     normalized, errors = runner.verify_dispatch(
@@ -171,7 +125,7 @@ def short_module_name(module):
 
 
 def display_cmdlet(step):
-    """Unresolved cmdlet line for reports, e.g. ``Get-AzX -Name <name1>``."""
+    """Unresolved cmdlet line for reports, e.g. "Get-AzX -Name <name1>"."""
     parts = [step["cmdlet"]]
     for name, value in step.get("parameters", {}).items():
         if isinstance(value, bool):
@@ -188,14 +142,12 @@ def display_cmdlet(step):
     return " ".join(parts)
 
 
-# pwsh invocation --------------------------------------------------------------
-
 def pwsh():
     return shutil.which("pwsh") or "pwsh"
 
 
 def pwsh_argv(action, request_file):
-    """Fixed argv for ``repro_ps.ps1``; never ``-Command``."""
+    """Fixed argv for repro_ps.ps1; never -Command."""
     return [
         pwsh(), "-NoLogo", "-NoProfile", "-NonInteractive", "-File",
         str(PS_SCRIPT), "-Action", action,
@@ -204,7 +156,7 @@ def pwsh_argv(action, request_file):
 
 
 def run_pwsh(action, request, log_stem, *, timeout, cwd=None, extra_env=None):
-    """Write ``request`` to a private file and run one ``repro_ps.ps1`` action."""
+    """Write the request to a private file and run one repro_ps.ps1 action."""
     log_stem = Path(log_stem)
     request_file = REQUEST_DIR / f"{log_stem.parent.name}-{log_stem.name}.json"
     _write_json(request_file, request, private=True)
@@ -216,8 +168,6 @@ def run_pwsh(action, request, log_stem, *, timeout, cwd=None, extra_env=None):
     finally:
         request_file.unlink(missing_ok=True)
 
-
-# Subcommands -----------------------------------------------------------------
 
 def cmd_verify(args):
     """Validate the dispatch and publish the matrix for the reproduce jobs."""
@@ -264,13 +214,10 @@ def cmd_verify(args):
 
 
 def install_request(spec, version):
-    """Modules ``repro_ps.ps1 -Action Install`` installs from PSGallery.
+    """Modules for repro_ps.ps1 -Action Install to fetch from PSGallery.
 
-    ``version`` null means the newest gallery version (resolved by
-    ``Find-Module`` and then installed with ``-RequiredVersion``). For
-    ``dev``/``pr`` the module under test is imported from its build path by
-    the steps, but the gallery base modules are still installed for the
-    resource group lifecycle.
+    A null version means the newest one. dev and pr builds still need the gallery base modules for
+    the resource group lifecycle.
     """
     target = spec["module"]
     modules = []
@@ -279,8 +226,7 @@ def install_request(spec, version):
             "name": target,
             "version": spec["reported_version"] if version == "reported" else None,
         })
-    # The lifecycle actions import the gallery Az.Accounts/Az.Resources even
-    # when one of them is the (source-built) module under test.
+    # The lifecycle actions import gallery Az.Accounts/Az.Resources even when one is under test.
     for module in [*step_modules(spec)[1:], *BASE_MODULES]:
         if all(m["name"] != module for m in modules):
             modules.append({"name": module, "version": None})
@@ -294,11 +240,10 @@ def install_request(spec, version):
 
 
 def build_module(spec, log_dir=None):
-    """Build the module under test from ``repro/src``; return its directory."""
+    """Build the module under test from repro/src and return its directory."""
     log_dir = Path(log_dir or RAW_DIR / "install")
     short = short_module_name(spec["module"])
-    # ``build.proj``'s default target ignores ``TargetModule`` (it builds
-    # every module), so call the script it wraps with the one module.
+    # build.proj's default target ignores TargetModule and builds everything, so call the script.
     result = run_quiet(
         ["pwsh", "-NoLogo", "-NoProfile", "-NonInteractive",
          "-File", BUILD_SCRIPT, "-RepoRoot", str(SOURCE_DIR.resolve()),
@@ -333,11 +278,9 @@ def _source_sha(log_stem):
 
 
 def pack_module_build(spec, head_sha, output_dir=None):
-    """Pack the ``Az.*`` build output into ``module.tar.gz`` + manifest.
+    """Pack the Az.* build output into module.tar.gz plus a manifest.
 
-    The whole ``artifacts/Debug`` module set is kept (``Az.Accounts`` is
-    built with the target), matching the ``dev`` import path. Only regular
-    files and directories are packed.
+    The whole artifacts/Debug set is kept because Az.Accounts is built with the target.
     """
     output_dir = Path(output_dir or PR_MODULE_DIR)
     modules = sorted(
@@ -367,7 +310,7 @@ def pack_module_build(spec, head_sha, output_dir=None):
 
 
 def load_module_manifest(spec, head_sha, module_dir=None):
-    """Verified PR build manifest for ``head_sha``, or raise ``ValueError``."""
+    """Verified PR build manifest for head_sha; raises ValueError otherwise."""
     module_dir = Path(module_dir or PR_MODULE_DIR)
     manifest = _read_json(module_dir / PR_MODULE_MANIFEST)
     if not isinstance(manifest, dict) or manifest.get("head_sha") != head_sha:
@@ -386,11 +329,9 @@ def load_module_manifest(spec, head_sha, module_dir=None):
 
 
 def extract_module_build(spec, manifest, module_dir=None, dest=None):
-    """Extract the verified archive; return the module-under-test directory.
+    """Extract the verified archive and return the module-under-test directory.
 
-    Accepts only regular files and directories below the manifest's module
-    directories (no links, devices, absolute paths or ``..``), within size
-    limits; extraction additionally uses tarfile's ``data`` filter.
+    Only regular files and directories under the manifest's module directories are accepted.
     """
     archive = Path(module_dir or PR_MODULE_DIR) / PR_MODULE_ARCHIVE
     dest = Path(dest or PR_MODULE_ROOT)
@@ -421,7 +362,7 @@ def extract_module_build(spec, manifest, module_dir=None, dest=None):
 
 
 def cmd_build(args):
-    """Build the module under test from the PR head (no Azure credentials)."""
+    """Build the module under test from the PR head, with no Azure credentials."""
     spec = verify_from_env()
     head_sha = os.environ.get("REPRO_PR_HEAD_SHA", "").strip()
     if not os.environ.get("REPRO_PR_NUMBER", "").strip() or not head_sha:
@@ -447,7 +388,7 @@ def cmd_build(args):
 
 
 def _install_pr_module(spec, info):
-    """Use the verified ``build-pr`` artifact; never runs PR code."""
+    """Use the verified build-pr artifact; never runs PR code."""
     head_sha = os.environ.get("REPRO_PR_HEAD_SHA", "").strip()
     try:
         manifest = load_module_manifest(spec, head_sha)
@@ -484,7 +425,7 @@ def _install_dev_module(spec, info):
 
 
 def cmd_install(args):
-    """Install the matrix version of the module under test (and helpers)."""
+    """Install the matrix version of the module under test and its helpers."""
     spec = verify_from_env()
     version = os.environ.get("REPRO_VERSION", "")
     if version not in VERSION_ORDER:
@@ -523,7 +464,7 @@ def cmd_install(args):
 
 
 def fetch_oidc_token(env=None, opener=None):
-    """GitHub OIDC ID token for Azure federation (``api://AzureADTokenExchange``)."""
+    """GitHub OIDC token for Azure federation."""
     env = os.environ if env is None else env
     url = env.get("ACTIONS_ID_TOKEN_REQUEST_URL", "")
     bearer = env.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
@@ -544,7 +485,7 @@ def fetch_oidc_token(env=None, opener=None):
 
 
 def connect(env=None, opener=None, log_name="connect"):
-    """Federated ``Connect-AzAccount``; returns the pwsh exit code."""
+    """Federated Connect-AzAccount; returns the pwsh exit code."""
     env = os.environ if env is None else env
     ids = {key: (env.get(key) or "").strip() for key in (
         "REPRO_CLIENT_ID", "REPRO_TENANT_ID", "REPRO_SUBSCRIPTION_ID",
@@ -571,7 +512,7 @@ def cmd_connect(args):
 
 
 def cmd_rg_create(args):
-    """Create the per-run resource group tagged with ``expiresAt``."""
+    """Create the per-run resource group tagged with expiresAt."""
     spec = verify_from_env()
     group = runner.resource_group_for(spec)
     runner.mark_group_requested(group)
@@ -590,7 +531,7 @@ def cmd_rg_create(args):
 
 
 def cmd_rg_delete(args):
-    """Delete the per-run resource group (always runs; janitor is the backstop)."""
+    """Delete the per-run resource group; the janitor is the backstop."""
     try:
         spec = verify_from_env()
     except VerificationError:
@@ -600,7 +541,7 @@ def cmd_rg_delete(args):
     if not runner.group_requested(group):
         print("No resource group was created in this job; nothing to delete.")
         return 0
-    # The steps may have outlived the first token; sign in again (best effort).
+    # The steps may have outlived the first token, so sign in again (best effort).
     connect(log_name="reconnect")
     result = run_pwsh("RemoveGroup", {"name": group},
                       RAW_DIR / "lifecycle" / "group-delete",
@@ -622,7 +563,7 @@ def cmd_logout(args):
 
 
 def invoke_request(step, spec, install):
-    """Request for ``repro_ps.ps1 -Action Invoke`` (one resolved step)."""
+    """Request for repro_ps.ps1 -Action Invoke (one resolved step)."""
     module = repro_spec.ps_cmdlet_module(step["cmdlet"])
     request = {
         "cmdlet": step["cmdlet"],
@@ -643,7 +584,7 @@ def invoke_request(step, spec, install):
 def execute(spec, *, install, resource_group, run_id, subscription_id=None,
             deadline_seconds=None, raw_dir=RAW_DIR, work_dir=WORK_DIR,
             log=print):
-    """Run the setup and repro cmdlets; return the raw (unredacted) result."""
+    """Run the setup and repro cmdlets and return the raw, unredacted result."""
     raw_dir, work_dir = Path(raw_dir), Path(work_dir)
     values, resolved = runner.prepare_run(
         spec, resource_group=resource_group, run_id=run_id,

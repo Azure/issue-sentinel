@@ -1,71 +1,5 @@
 #!/usr/bin/env python3
-"""Sanitize live reproduction output into ``repro.redacted.json``.
-
-Runs after the Azure sign-out step, with no Azure credentials. Raw command
-output stays in ``repro/raw`` on the runner; only the document written here is
-uploaded. Redaction applies, in order:
-
-1. exact run values: the resource group (``<rg>``), generated names
-   (``<nameN>``), the subscription (``<sub>``), tenant and client IDs and
-   the generated password;
-2. every rule of ``x_engineering_agent.security.sensitive_data`` (vendored
-   verbatim as ``repro_sensitive_data``): private keys, GitHub/AWS tokens,
-   storage keys, SAS signatures, JWTs, bearer tokens, credentials,
-   cloud identifiers, e-mail addresses, phone and payment card numbers;
-3. URL query strings, GUIDs (subscription, tenant and object IDs), IPv4/IPv6
-   addresses and long key-like strings.
-
-A field that still trips the sensitive-data scanner afterwards is withheld
-(fail closed). Only exit codes, verdicts, an error code and the last few
-redacted error lines are kept; stdout bodies are never copied.
-
-Both workflows use this sanitizer: ``live-repro.yml`` (Azure CLI, default
-``--runner cli``) and ``live-repro-powershell.yml`` (``--runner powershell``,
-plan item C2g), so they share the result schema, artifact names and rules.
-
-Result schema (``x-engineering-agent/live-repro-result`` v1), consumed by the
-Agent (plan item C2d)::
-
-    {
-      "schema": "x-engineering-agent/live-repro-result",
-      "schema_version": 1,
-      "issue": "Azure/azure-cli#123",
-      "spec_hash": "<64 hex>",
-      "pr_number": null | 456,
-      "pr_head_sha": null | "<40 hex>",    # PR-head re-runs (C2f)
-      "tool": "az" | "az-extension:<name>" | "pwsh-az",
-      "module": null | "Az.Storage",       # pwsh-az: the module under test
-      "observed_in_issue": {...},          # from the validated spec
-      "run": {"id": "...", "attempt": "...", "workflow_sha": "..."},
-      "results": [{
-        "version": "reported" | "latest" | "dev" | "pr",
-        "cli_version": "2.79.0" | null,    # pwsh-az: version of "module"
-        "extension_version": "1.0.0" | null,
-        "source_sha": "<12 hex>" | null,   # dev / pr checkouts
-        "status": "completed" | "setup_failed" | "timeout" | "error",
-        "reproduced": true | false | null, # null = inconclusive
-        "error": null | "<short reason>",
-        "steps": [{
-          "phase": "setup" | "repro", "index": 0,
-          "command": "az storage account show -g <rg> -n <name1>",
-                     # or "Get-AzStorageAccount -ResourceGroupName <rg> ..."
-          "exit_code": 3 | null, "timed_out": false, "skipped": false,
-          "duration_seconds": 2.5,
-          "expect_met": true | false | null,
-          "observed_matched": true | false | null,   # repro steps only
-          "error_code": "ResourceNotFound" | null,
-          "error_excerpt": "<= 12 redacted stderr lines, <= 1500 chars"
-        }]
-      }],
-      "redaction": {"withheld_fields": 0}
-    }
-
-``reproduced`` is true when any repro step matched every
-``observed_in_issue`` criterion (exit code, fixed-string error/output
-substring) on the raw output, false when all steps ran without a match and
-null when setup failed, the run timed out or the CLI (module) could not be
-installed.
-"""
+"""Sanitizes live reproduction output into repro.redacted.json, the only uploaded file."""
 
 import argparse
 import json
@@ -78,6 +12,16 @@ import repro_runner as runner
 from repro_sensitive_data import redact_sensitive_text, scan_sensitive_content
 
 _cli_runner = runner
+
+# Result schema x-engineering-agent/live-repro-result v1, read by the Agent:
+#   schema, schema_version, issue, spec_hash, pr_number, pr_head_sha, tool, module,
+#   observed_in_issue, run {id, attempt, workflow_sha},
+#   results [{version, cli_version, extension_version, source_sha, status, reproduced, error,
+#             steps [{phase, index, command, exit_code, timed_out, skipped, duration_seconds,
+#                     expect_met, observed_matched, error_code, error_excerpt}]}],
+#   redaction {withheld_fields}
+# reproduced is true if a repro step matched observed_in_issue, false if none did,
+# and null when setup failed, the run timed out or the tool couldn't be installed.
 RESULT_FILE_NAME = "repro.redacted.json"
 WITHHELD = "[withheld: sensitive data]"
 MAX_EXCERPT_LINES = 12
@@ -107,7 +51,7 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _known_tokens(known):
-    """``{raw value: replacement}`` for exact values known to the run."""
+    """Exact run values mapped to their placeholders."""
     tokens = {}
     for key, value in (known or {}).items():
         if not isinstance(value, str) or len(value) < 4:
@@ -132,7 +76,7 @@ def _redact_key_run(match):
 
 
 def redact_text(text, known=None):
-    """Apply every redaction rule to ``text`` (see the module docstring)."""
+    """Apply every redaction rule to text."""
     text = str(text if text is not None else "")
     for value, token in sorted(
         _known_tokens(known).items(), key=lambda item: -len(item[0]),
@@ -297,7 +241,7 @@ def env_known(env=None):
 
 
 def finalize(document, known):
-    """Serialize ``document``; fail closed if anything sensitive survived."""
+    """Serialize document; fail closed if anything sensitive survived."""
     text = json.dumps(document, indent=2, sort_keys=True)
     if is_clean(text, known):
         return text
@@ -317,7 +261,7 @@ def finalize(document, known):
 
 def sanitize_version(spec, env=None, raw_dir=None, out_dir=None,
                      runner_module=None):
-    """Per-version document from ``repro/raw`` (reproduce job)."""
+    """Per-version document from repro/raw (reproduce job)."""
     env = os.environ if env is None else env
     runner = runner_module or _cli_runner
     raw_dir = Path(raw_dir or runner.RAW_DIR)
@@ -349,7 +293,7 @@ def _missing(version):
 
 
 def merge(spec, parts_dir, out_path, env=None, runner_module=None):
-    """Combine per-version documents into the final ``repro.redacted.json``."""
+    """Combine per-version documents into the final repro.redacted.json."""
     env = os.environ if env is None else env
     runner = runner_module or _cli_runner
     spec_hash = env.get("REPRO_SPEC_HASH", "")

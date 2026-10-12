@@ -1,13 +1,4 @@
-"""Structure of the issue-sentinel PowerShell reproduction workflow (plan
-item C2g).
-
-``live-repro-powershell.yml`` mirrors ``live-repro.yml`` (C2c) for
-``pwsh-az`` specs: same inputs, run name, permissions, cleanup, artifact and
-PR-head (C2f) trust model, but sign-in is a federated ``Connect-AzAccount``
-run by the trusted runner (no ``azure/login``, no client secret), every step
-goes through ``repro_ps_runner.py`` and ``build-pr`` builds the module under
-test instead of wheels.
-"""
+"""Structure and security checks for the PowerShell live reproduction workflow."""
 
 import re
 
@@ -196,8 +187,6 @@ def test_source_checkout_and_dotnet_only_for_dev(ps):
     assert source["with"]["ref"] == "${{ needs.prepare.outputs.dev_ref }}"
     assert dotnet["uses"].startswith("actions/setup-dotnet@")
 
-
-# PR-head re-runs (plan item C2f) -------------------------------------------
 
 def test_pr_mode_validates_the_agent_fork_pr_in_prepare(ps, cli):
     prepare = ps["jobs"]["prepare"]

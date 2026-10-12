@@ -1,42 +1,5 @@
 #!/usr/bin/env python3
-"""Trusted runner for ``live-repro.yml`` (Azure/issue-sentinel).
-
-Every subcommand is invoked by a fixed ``run:`` line in the workflow and
-reads its inputs from environment variables (never from ``${{ }}``
-interpolation into a shell). Untrusted input is the dispatched ReproSpec;
-this runner:
-
-- re-validates it with the vendored C2b validator (``repro_spec``) and
-  refuses it unless ``sha256(spec input) == spec_hash``, the input is the
-  canonical JSON of the normalized spec and the issue input matches;
-- runs each step as an argv list (``subprocess`` with ``shell=False``) in an
-  empty working directory with a minimal environment;
-- redirects ALL command output (installs, resource group lifecycle and
-  reproduction steps) to files under ``repro/raw`` and prints only
-  exit codes, durations and verdicts to the public log.
-
-``repro_sanitize.py`` turns the raw files into ``repro.redacted.json``,
-the only file the workflow uploads.
-
-PR-head re-runs (``pr_number`` + ``pr_head_sha``, plan item C2f) re-run the
-same verified spec on ``dev`` (before) and the PR head (after). Trust model:
-the PR is authored by the X Engineering Agent on the Agent's own fork, so
-``verify`` only accepts an open PR on the spec's repository whose head
-repository is the Agent fork configured in ``REPO_PROFILES`` and whose head
-commit is exactly ``pr_head_sha``. ``build`` turns that commit into wheels
-in a separate job with no Azure credentials and no OIDC permission (building
-runs the PR's packaging code). The reproduce job only installs those wheels
-(installing a wheel runs no package code) and never executes the PR code
-before the ``run`` step, the sandbox designed to run the CLI with the BAMI
-login; ``install`` therefore reads the PR versions from the wheel names
-instead of running ``az version``.
-
-Environment: ``REPRO_ISSUE``, ``REPRO_SPEC``, ``REPRO_SPEC_HASH``,
-``REPRO_PR_NUMBER``, ``REPRO_PR_HEAD_SHA`` (all subcommands);
-``REPRO_VERSION`` (matrix entry), ``REPRO_SUBSCRIPTION_ID`` (``run``),
-``REPRO_GITHUB_TOKEN`` (``verify``, read-only), ``GITHUB_RUN_ID``,
-``GITHUB_OUTPUT``.
-"""
+"""Trusted runner for live-repro.yml; untrusted spec steps never touch a shell or the log."""
 
 import argparse
 import datetime as dt
@@ -80,7 +43,7 @@ EXTENSIONS_REPOSITORY = "Azure/azure-cli-extensions"
 DEV_REFS = {CLI_REPOSITORY: "dev", EXTENSIONS_REPOSITORY: "main"}
 INSTALL_TIMEOUT_SECONDS = 25 * 60
 LIFECYCLE_TIMEOUT_SECONDS = 20 * 60
-# Written by ``rg-create`` before it creates the group (see ``group_requested``).
+# Written by rg-create before it creates the group.
 GROUP_MARKER = RAW_DIR / "lifecycle" / "group-requested"
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _PR_NUMBER = re.compile(r"^[1-9]\d{0,8}$")
@@ -92,8 +55,7 @@ _WHEEL_NAME = re.compile(
 )
 GITHUB_API = "https://api.github.com"
 _RUN_KEY = re.compile(r"[^A-Za-z0-9-]")
-# Variables a child process may inherit. Everything else (GitHub and OIDC
-# request tokens, runner internals) is dropped.
+# Child processes inherit only these; GitHub and OIDC request tokens are dropped.
 _CHILD_ENV_KEYS = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "USER")
 _CHILD_ENV_FIXED = {
     "AZURE_CORE_COLLECT_TELEMETRY": "false",
@@ -106,23 +68,18 @@ _CHILD_ENV_FIXED = {
 
 
 class VerificationError(ValueError):
-    """The dispatched spec does not match its hash or fails validation."""
+    """The dispatched spec doesn't match its hash or fails validation."""
 
     def __init__(self, errors):
         self.errors = list(errors)
         super().__init__("; ".join(self.errors))
 
 
-# Spec verification -----------------------------------------------------------
-
 def verify_dispatch(spec_text, spec_hash, issue, pr_number="", pr_head_sha=""):
-    """Checks shared by every reproduction workflow; returns ``(spec, errors)``.
+    """Checks shared by every reproduction workflow; returns (spec, errors).
 
-    The spec must be valid, ``spec_text`` must be exactly the canonical JSON
-    of the normalized spec, its SHA-256 must equal ``spec_hash`` and it must
-    target ``issue``. A PR-head re-run (C2f) needs ``pr_head_sha`` (40
-    lowercase hex). Raises ``VerificationError`` when the spec cannot be
-    used at all; returns the remaining problems as ``errors``.
+    The input must be the canonical JSON of the spec and hash to spec_hash. Raises
+    VerificationError when the spec can't be used at all.
     """
     spec_text = spec_text if isinstance(spec_text, str) else ""
     spec_hash = (spec_hash or "").strip()
@@ -156,13 +113,7 @@ def verify_dispatch(spec_text, spec_hash, issue, pr_number="", pr_head_sha=""):
 
 
 def verify_spec(spec_text, spec_hash, issue, pr_number="", pr_head_sha=""):
-    """Re-validate the dispatched spec; return the normalized spec.
-
-    Raises ``VerificationError`` unless ``verify_dispatch`` passes. Only
-    ``az``/``az-extension`` specs run in this workflow (PowerShell uses
-    ``live-repro-powershell.yml``). A PR-head re-run also needs a configured
-    Agent fork for the source repository; ``verify_pull_request`` checks the PR.
-    """
+    """Re-validate an az or az-extension spec and return the normalized spec."""
     pr_number = (pr_number or "").strip()
     normalized, errors = verify_dispatch(
         spec_text, spec_hash, issue, pr_number, pr_head_sha,
@@ -199,7 +150,7 @@ def verify_from_env(env=None):
 
 
 def agent_fork(repository):
-    """The Agent's head repository (fork) for ``repository``, or ``None``."""
+    """The Agent's fork for repository, or None."""
     fork = (repro_spec.REPO_PROFILES.get(repository) or {}).get("agent_fork")
     return fork if isinstance(fork, str) and _REPOSITORY.match(fork) else None
 
@@ -220,13 +171,9 @@ def _fetch_pull_request(repository, pr_number, env=None):
 
 
 def verify_pull_request(repository, pr_number, head_sha, *, fetch=None):
-    """Check that the PR is an open Agent PR whose head is ``head_sha``.
+    """Check that the PR is an open Agent PR whose head is exactly head_sha.
 
-    Only PRs from the configured Agent fork may be re-run: the PR must be
-    open against ``repository``, its head repository must be
-    ``agent_fork(repository)`` and its head commit exactly ``head_sha`` (a
-    newer push needs a new dispatch). Returns the fork to check out; raises
-    ``VerificationError`` with fixed messages (API text is never printed).
+    Returns the fork to check out. Errors use fixed messages; API text is never printed.
     """
     fork = agent_fork(repository)
     if not fork:
@@ -266,7 +213,7 @@ def source_repository(spec):
 
 
 def matrix_versions(spec, pr_number=""):
-    """Versions to run: the spec's versions, or dev (before) + pr (after)."""
+    """Versions to run: the spec's versions, or dev (before) and pr (after)."""
     if (pr_number or "").strip():
         return ["dev", "pr"]
     return [v for v in VERSION_ORDER if v in spec["versions"]]
@@ -285,15 +232,13 @@ def resource_group_for(spec, env=None):
 
 
 def display_command(argv):
-    """Unresolved argv for reports: placeholders shown as ``<rg>`` etc."""
+    """Unresolved argv for reports, with placeholders shown as <rg> etc."""
     shown = [re.sub(r"\{([a-z0-9]+)\}", r"<\1>", token) for token in argv]
     return " ".join(
         token if re.fullmatch(r"[^\s'\"]+", token) else shlex.quote(token)
         for token in shown
     )
 
-
-# Quiet process execution -----------------------------------------------------
 
 def child_env(extra=None, env=None):
     env = os.environ if env is None else env
@@ -304,11 +249,7 @@ def child_env(extra=None, env=None):
 
 
 def run_quiet(argv, log_stem, *, timeout, cwd=None, extra_env=None):
-    """Run ``argv`` without a shell; stdout/stderr go to ``<log_stem>.out/.err``.
-
-    Returns ``{"exit_code", "timed_out", "duration_seconds", "stdout",
-    "stderr"}`` with the log file paths; output is never printed.
-    """
+    """Run argv without a shell, sending stdout and stderr to files; output is never printed."""
     log_stem = Path(log_stem)
     log_stem.parent.mkdir(parents=True, exist_ok=True)
     out_path = log_stem.with_suffix(".out")
@@ -371,8 +312,6 @@ def system_az():
 def venv_az():
     return (VENV_DIR / "bin" / "az").resolve()
 
-
-# Subcommands -----------------------------------------------------------------
 
 def cmd_verify(args):
     """Validate the dispatch and publish the matrix for the reproduce jobs."""
@@ -481,7 +420,7 @@ def _sha256(path):
 
 
 def _expected_wheels(spec, wheels):
-    """Problems with the built wheel set for ``spec`` (empty when usable)."""
+    """Problems with the built wheel set for spec (empty when usable)."""
     if extension_name(spec):
         return [] if len(wheels) == 1 else ["expected exactly one extension wheel"]
     names = sorted(w["distribution"] for w in wheels)
@@ -491,7 +430,7 @@ def _expected_wheels(spec, wheels):
 
 
 def load_wheel_manifest(spec, head_sha, wheel_dir=None):
-    """Verified wheel list for the PR head, or raise ``ValueError``."""
+    """Verified wheel list for the PR head; raises ValueError otherwise."""
     wheel_dir = Path(wheel_dir or WHEEL_DIR)
     manifest = _read_json(wheel_dir / WHEEL_MANIFEST.name)
     if not isinstance(manifest, dict) or manifest.get("head_sha") != head_sha:
@@ -517,7 +456,7 @@ def _source_sha(log_stem):
 
 
 def cmd_build(args):
-    """Build wheels from the PR head checkout (no Azure credentials here)."""
+    """Build wheels from the PR head checkout, with no Azure credentials."""
     spec = verify_from_env()
     head_sha = os.environ.get("REPRO_PR_HEAD_SHA", "").strip()
     if not head_sha:
@@ -633,17 +572,15 @@ def expires_at(now=None, hours=None):
 
 
 def mark_group_requested(group):
-    """Record that ``rg-create`` was attempted for ``group`` in this job."""
+    """Record that rg-create was attempted for group in this job."""
     GROUP_MARKER.parent.mkdir(parents=True, exist_ok=True)
     GROUP_MARKER.write_text(group + "\n", encoding="utf-8")
 
 
 def group_requested(group):
-    """Whether ``rg-create`` was attempted for ``group`` in this job.
+    """Whether rg-create was attempted for group in this job.
 
-    ``rg-delete`` always runs; when the job failed before ``rg-create``
-    (for example at Azure login) there is nothing to delete and no session
-    to delete it with.
+    If the job failed earlier, e.g. at Azure login, there is nothing to delete.
     """
     try:
         return GROUP_MARKER.read_text(encoding="utf-8").strip() == group
@@ -652,7 +589,7 @@ def group_requested(group):
 
 
 def cmd_rg_create(args):
-    """Create the per-run resource group tagged with ``expiresAt``."""
+    """Create the per-run resource group tagged with expiresAt."""
     spec = verify_from_env()
     group = resource_group_for(spec)
     mark_group_requested(group)
@@ -669,7 +606,7 @@ def cmd_rg_create(args):
 
 
 def cmd_rg_delete(args):
-    """Delete the per-run resource group (always runs; janitor is the backstop)."""
+    """Delete the per-run resource group; the janitor is the backstop."""
     try:
         spec = verify_from_env()
     except VerificationError:
@@ -732,7 +669,7 @@ def _read_text(path, limit=2_000_000):
 
 def prepare_run(spec, *, resource_group, run_id, subscription_id=None,
                 work_dir=WORK_DIR):
-    """Fresh work directory plus resolved placeholders: ``(values, resolved)``."""
+    """Fresh work directory plus resolved placeholders: (values, resolved)."""
     work_dir = Path(work_dir)
     if work_dir.exists():
         shutil.rmtree(work_dir)
@@ -751,7 +688,7 @@ def prepare_run(spec, *, resource_group, run_id, subscription_id=None,
 def execute(spec, *, az_path, resource_group, run_id, subscription_id=None,
             deadline_seconds=None, raw_dir=RAW_DIR, work_dir=WORK_DIR,
             log=print):
-    """Run the setup and repro steps; return the raw (unredacted) result."""
+    """Run the setup and repro steps and return the raw, unredacted result."""
     raw_dir, work_dir = Path(raw_dir), Path(work_dir)
     values, resolved = prepare_run(
         spec, resource_group=resource_group, run_id=run_id,
@@ -775,12 +712,9 @@ def execute(spec, *, az_path, resource_group, run_id, subscription_id=None,
 
 def run_steps(spec, resolved, values, *, launch, display,
               deadline_seconds=None, log=print):
-    """Run resolved steps with ``launch(phase, index, step, remaining)``.
+    """Run resolved steps with launch(phase, index, step, remaining).
 
-    ``launch`` returns a ``run_quiet`` result; ``display(original_step)``
-    renders the unresolved step for the report. Setup steps must meet their
-    ``expect`` (default exit 0); the run stops at the first failed setup
-    step or when the time budget is spent.
+    Stops at the first setup step that misses its expect, or when time runs out.
     """
     budget = deadline_seconds or spec["timeout_minutes"] * 60
     deadline = time.monotonic() + budget

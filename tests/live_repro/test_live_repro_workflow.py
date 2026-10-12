@@ -1,10 +1,4 @@
-"""Structure of the live reproduction workflows (C2c, C2f).
-
-The X Engineering Agent dispatches these workflows, so these tests pin the
-security properties: minimal permissions, no Key Vault/PAT, no output in the
-log, always-deleted resource groups and only ``repro.redacted.json``
-uploaded.
-"""
+"""Security checks for the live reproduction workflows the Agent dispatches."""
 
 import re
 import sys
@@ -25,10 +19,9 @@ import repro_policy as settings  # noqa: E402
 
 
 def reproduction_run_title(issue, digest, pr_number=None, head_sha=None):
-    """Run title the Agent looks up (``reproduction_run_title`` in the Agent).
+    """Run title the Agent looks up.
 
-    ``Live Repro (<issue> @ <spec_hash>)``, with `` PR <n> head <sha>``
-    appended inside the parentheses for PR-head re-runs.
+    PR-head re-runs append " PR <n> head <sha>" inside the parentheses.
     """
     suffix = ""
     if pr_number is not None:
@@ -38,7 +31,7 @@ def reproduction_run_title(issue, digest, pr_number=None, head_sha=None):
 
 def _load(path):
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    # PyYAML reads the bare ``on`` key as boolean True.
+    # PyYAML reads the bare `on` key as boolean True.
     data["on"] = data.pop(True, data.get("on"))
     return data
 
@@ -131,7 +124,7 @@ def test_dispatch_inputs_match_dispatch_reproduction(repro):
 
 
 def _render(expression_text, inputs):
-    """Evaluate the small subset of expressions used by ``run-name``."""
+    """Evaluate the small subset of expressions used by `run-name`."""
     def evaluate(match):
         expr = match.group(1).strip()
         simple = re.fullmatch(r"inputs\.(\w+)", expr)
@@ -299,9 +292,6 @@ def _stdlib():
     import sys
 
     return set(sys.stdlib_module_names) | {"__future__"}
-
-
-# PR-head re-runs (plan item C2f) -------------------------------------------
 
 
 def test_pr_mode_validates_the_agent_fork_pr_in_prepare(repro):
