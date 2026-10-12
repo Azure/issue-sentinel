@@ -55,6 +55,11 @@ npm ci
 npm run build
 ```
 
+The live reproduction workflows (`.github/workflows/live-repro*.yml`) and
+their runner scripts are described in
+[`.github/scripts/live_repro/README.md`](.github/scripts/live_repro/README.md).
+Run their tests with `python -m pytest -q tests/live_repro`.
+
 ## Used by
 
 - [Azure CLI](https://github.com/Azure/azure-cli)

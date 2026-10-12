@@ -17,13 +17,13 @@ from urllib.parse import urlsplit
 import repro_policy as settings
 from repro_sensitive_data import scan_sensitive_content
 
-# Repository kinds and Agent forks from x_engineering_agent REPO_PROFILES.
+# Repository kinds, repro tools and Agent forks from x_engineering_agent REPO_PROFILES.
 REPO_PROFILES = {
-    'Azure/azclips': {'kind': 'dotnet-cli', 'agent_fork': 'Azure/azclips'},
-    'Azure/azure-cli': {'kind': 'cli', 'agent_fork': 'a0x1ab/azure-cli'},
-    'Azure/azure-cli-extensions': {'kind': 'cli-ext', 'agent_fork': 'a0x1ab/azure-cli-extensions'},
-    'Azure/azure-powershell': {'kind': 'powershell', 'agent_fork': 'a0x1ab/azure-powershell'},
-    'Azure/terraform-provider-azapi': {'kind': 'terraform-provider', 'agent_fork': None},
+    'Azure/azclips': {'kind': 'dotnet-cli', 'repro_tools': (), 'agent_fork': 'Azure/azclips'},
+    'Azure/azure-cli': {'kind': 'cli', 'repro_tools': ('az',), 'agent_fork': 'a0x1ab/azure-cli'},
+    'Azure/azure-cli-extensions': {'kind': 'cli-ext', 'repro_tools': ('az',), 'agent_fork': 'a0x1ab/azure-cli-extensions'},
+    'Azure/azure-powershell': {'kind': 'powershell', 'repro_tools': ('pwsh-az',), 'agent_fork': 'a0x1ab/azure-powershell'},
+    'Azure/terraform-provider-azapi': {'kind': 'terraform-provider', 'repro_tools': (), 'agent_fork': None},
 }
 
 REPRO_SPEC_SCHEMA = {
@@ -734,11 +734,12 @@ def _parse_spec(spec):
 
 
 def _tool_matches_repository(tool, repository, errors):
-    kind = (REPO_PROFILES.get(repository) or {}).get("kind")
-    if tool == "pwsh-az":
-        if kind != "powershell":
-            errors.append("tool: pwsh-az reproduces Azure PowerShell issues only")
-    elif kind not in ("cli", "cli-ext"):
+    family = "pwsh-az" if tool == "pwsh-az" else "az"
+    if family in (REPO_PROFILES.get(repository) or {}).get("repro_tools", ()):
+        return
+    if family == "pwsh-az":
+        errors.append("tool: pwsh-az reproduces Azure PowerShell issues only")
+    else:
         errors.append(f"tool: `{tool}` reproduces Azure CLI issues only")
 
 
