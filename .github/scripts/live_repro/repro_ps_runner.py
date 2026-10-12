@@ -267,7 +267,10 @@ def install_request(spec, version):
     """Modules ``repro_ps.ps1 -Action Install`` installs from PSGallery.
 
     ``version`` null means the newest gallery version (resolved by
-    ``Find-Module`` and then installed with ``-RequiredVersion``).
+    ``Find-Module`` and then installed with ``-RequiredVersion``). For
+    ``dev``/``pr`` the module under test is imported from its build path by
+    the steps, but the gallery base modules are still installed for the
+    resource group lifecycle.
     """
     target = spec["module"]
     modules = []
@@ -276,8 +279,10 @@ def install_request(spec, version):
             "name": target,
             "version": spec["reported_version"] if version == "reported" else None,
         })
+    # The lifecycle actions import the gallery Az.Accounts/Az.Resources even
+    # when one of them is the (source-built) module under test.
     for module in [*step_modules(spec)[1:], *BASE_MODULES]:
-        if module != target and all(m["name"] != module for m in modules):
+        if all(m["name"] != module for m in modules):
             modules.append({"name": module, "version": None})
     for module in modules:
         if not _MODULE.match(module["name"]) or (
