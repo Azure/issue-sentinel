@@ -243,17 +243,8 @@ jobs:
           echo "selected=${selected}" >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: Upload test artifacts
-        if: always() && steps.detect.outputs.has_tests == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: live-test-ps-pr-${{ inputs.pr_number }}
-          path: test-output/
-          if-no-files-found: warn
-          retention-days: 14
-
       - name: Build PR comment body
-        if: always() && inputs.post_comment == true
+        if: always()
         id: body
         env:
           HAS_TESTS: ${{ steps.detect.outputs.has_tests }}
@@ -326,6 +317,31 @@ jobs:
             echo "_Posted by the [X Engineering Agent](https://github.com/Azure/issue-sentinel/blob/main/.github/workflows/live-test-powershell.yml) PowerShell live-test workflow._"
           } > comment.md
           echo "path=comment.md" >> "$GITHUB_OUTPUT"
+
+      - name: Write live-test summary for the agent report
+        if: always() && steps.body.outputs.path != ''
+        run: |
+          set -euo pipefail
+          mkdir -p test-output
+          python3 - "${{ steps.body.outputs.path }}" test-output/live-test-summary.md <<'PY'
+          import re, sys
+          lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+          if lines and lines[0].startswith("## "):
+              lines = lines[1:]
+          lines = [l for l in lines if not l.startswith("_Posted by the ")]
+          text = "\n".join(lines).strip()
+          text = re.sub("[\u2139\u23ed\u23f3\u26a0\u2705\u274c]\ufe0f? ?", "", text)
+          open(sys.argv[2], "w", encoding="utf-8").write(text + "\n")
+          PY
+
+      - name: Upload test artifacts
+        if: always() && steps.detect.outputs.has_tests == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: live-test-ps-pr-${{ inputs.pr_number }}
+          path: test-output/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Check out live-test comment helper
         if: always() && inputs.post_comment == true
