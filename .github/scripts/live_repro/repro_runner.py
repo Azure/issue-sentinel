@@ -674,7 +674,7 @@ def prepare_run(spec, *, resource_group, run_id, subscription_id=None,
     if work_dir.exists():
         shutil.rmtree(work_dir)
     work_dir.mkdir(parents=True)
-    (work_dir / INPUT_FILE_NAME).write_text(INPUT_FILE_TEXT, encoding="utf-8")
+    file_name = repro_spec.input_file_name(spec) or INPUT_FILE_NAME
     for name in spec.get("workdir_dirs", []):
         (work_dir / name).mkdir()
     digest = repro_spec._hash_canonical(repro_spec.canonical_spec_json(spec))
@@ -682,9 +682,12 @@ def prepare_run(spec, *, resource_group, run_id, subscription_id=None,
     values = repro_spec.placeholder_values(
         digest, run_id, resource_group=resource_group,
         location=spec["location"], subscription_id=subscription_id,
-        password=password, file_path=INPUT_FILE_NAME,
+        password=password, file_path=file_name,
     )
-    return values, repro_spec.resolve_placeholders(spec, values, strict=True)
+    resolved = repro_spec.resolve_placeholders(spec, values, strict=True)
+    content = (resolved.get("input_file") or {}).get("content", INPUT_FILE_TEXT)
+    (work_dir / file_name).write_text(content, encoding="utf-8")
+    return values, resolved
 
 
 def execute(spec, *, az_path, resource_group, run_id, subscription_id=None,

@@ -29,6 +29,10 @@ REPRO_MAX_ARGS_PER_STEP = 40
 REPRO_MAX_ARG_CHARS = 256
 REPRO_MAX_QUERY_CHARS = 512
 REPRO_MAX_TEXT_CHARS = 200
+REPRO_MAX_INPUT_FILE_CHARS = 8000
+REPRO_INPUT_FILE_EXTENSIONS = (
+    "txt", "json", "yaml", "yml", "bicep", "bicepparam", "xml", "csv",
+)
 REPRO_MAX_PS_PARAMETERS = 30
 REPRO_MAX_LIST_ITEMS = 10
 REPRO_DEFAULT_TIMEOUT_MINUTES = 20
@@ -91,11 +95,24 @@ REPRO_AZ_ALLOWED_COMMANDS = tuple(tuple(c.split()) for c in (
     "aks", "sig", "devcenter", "grafana", "communication", "databricks",
     "bicep", "confcom", "k8s-extension", "extension",
     "cloud show", "cloud list", "cloud list-profiles", "cloud set",
+    "config set", "config get", "config unset",
 ))
+
+# Per-command argument rules that replace the generic ones (prefix match on the
+# command path). "value": generic value check; "one-of:a,b": exact values;
+# "image": an image from REPRO_ALLOWED_IMAGE_HOSTS.
+REPRO_AZ_ARGUMENT_OVERRIDES = {
+    ("sig", "image-definition"): {"--sku": "value"},
+    ("grafana", "service-account"): {
+        "--role": "one-of:Viewer,Editor,Admin,None",
+    },
+    ("acr", "import"): {"--source": "image"},
+}
 
 # Denied even inside an allowed group (prefix match), plus groups that must never run.
 REPRO_AZ_DENIED_COMMANDS = tuple(tuple(c.split()) for c in (
-    "login", "logout", "account", "ad", "role", "rest", "config",
+    "login", "logout", "account", "ad", "role", "rest",
+    "config param-persist",
     "cloud register", "cloud update", "cloud unregister", "upgrade", "self-test", "interactive", "find", "bicep publish",
     "deployment", "deployment-scripts", "ts", "policy", "lock", "feature",
     "ssh", "tag", "group create", "group delete", "group update",
