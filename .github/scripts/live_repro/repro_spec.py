@@ -65,6 +65,17 @@ REPRO_SPEC_SCHEMA = {
             "type": "integer", "minimum": 1,
             "maximum": settings.REPRO_MAX_TIMEOUT_MINUTES,
         },
+        "input_file": {
+            "type": "object", "additionalProperties": False,
+            "required": ["extension", "content"],
+            "properties": {
+                "extension": {"enum": list(settings.REPRO_INPUT_FILE_EXTENSIONS)},
+                "content": {
+                    "type": "string", "minLength": 1,
+                    "maxLength": settings.REPRO_MAX_INPUT_FILE_CHARS,
+                },
+            },
+        },
     },
     "$defs": {
         "step": {
@@ -122,7 +133,14 @@ _HOST = re.compile(
 _KEY_RUN = re.compile(r"[A-Za-z0-9+/]{32,}={0,2}")
 _DOT_SEGMENT = re.compile(r"(?:^|/)\.\.?(?:/|$|\?)")
 _RESOURCE_ID = re.compile(
-    r"^/subscriptions/\{sub\}/resourcegroups/\{rg\}(?:/[^/?#]+)*$", re.I,
+    r"^/subscriptions/\{sub\}(?:/resourcegroups/\{rg\}(?:/[^/?#]+)*)?$", re.I,
+)
+# Placeholder-style GUIDs such as 00000000-0000-0000-0000-000000000001.
+_DUMMY_GUID = re.compile(r"^0{8}-0{4}-0{4}-0{4}-0{8}[0-9a-fA-F]{4}$")
+_KEY_PREFIX = re.compile(r"^[A-Za-z][A-Za-z0-9_.\[\]-]{0,127}=")
+_CONFIG_SETTING = re.compile(
+    r"^(?:core|output|logging|extension|clients)\.[a-z_]{1,64}"
+    r"(?:=[A-Za-z0-9_.-]{0,64})?$"
 )
 _ARM_URL = re.compile(
     r"^(?:https://management\.azure\.com)?"
@@ -141,8 +159,9 @@ _TOP_KEYS = frozenset({
     "schema_version", "issue", "tool", "versions", "reported_version",
     "module",
     "location", "setup", "repro", "observed_in_issue", "timeout_minutes",
-    "workdir_dirs",
+    "workdir_dirs", "input_file",
 })
+_INPUT_FILE_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\u2028\u2029]")
 _OBSERVED_KEYS = frozenset({"exit_code", "error_substring", "output_substring"})
 _EXPECT_KEYS = frozenset({"exit_code", "error_substring"})
 _REST_FLAGS = frozenset({
@@ -150,7 +169,7 @@ _REST_FLAGS = frozenset({
     "--url-parameters", "--query", "-o", "--output", "--debug", "--verbose",
     "--only-show-errors",
 })
-_QUERY_FLAGS = frozenset({"--query"})
+_QUERY_FLAGS = frozenset({"--query", "--analytics-query"})
 _OUTPUT_FLAGS = frozenset({"-o", "--output"})
 _NAME_FLAGS = frozenset({"-n", "--name"})
 _MAX_SPEC_JSON_CHARS = 20_000
@@ -215,10 +234,11 @@ def _looks_like_key(value):
 
 
 def _check_sensitive(value, loc, errors):
-    if _GUID.search(value):
+    if any(not _DUMMY_GUID.match(m.group(0)) for m in _GUID.finditer(value)):
         errors.append(
             f"{loc}: literal GUIDs (subscription, tenant or object IDs) are "
-            "not allowed; use placeholders"
+            "not allowed; use placeholders or a dummy GUID like "
+            "00000000-0000-0000-0000-000000000001"
         )
     if _looks_like_key(value):
         errors.append(f"{loc}: value looks like a key or token")
@@ -230,13 +250,33 @@ def _check_sensitive(value, loc, errors):
         )
 
 
-def _check_value(value, loc, errors):
+def _check_resource_ids(value, loc, errors):
+    """Resource IDs and {sub} must stay inside the run's subscription and group."""
+    for item in value.split(","):
+        item = _KEY_PREFIX.sub("", item, count=1)
+        if "/subscriptions/" in item.lower():
+            if not _RESOURCE_ID.match(item) or _DOT_SEGMENT.search(item):
+                errors.append(
+                    f"{loc}: resource IDs must be /subscriptions/{{sub}} or "
+                    "start with /subscriptions/{sub}/resourceGroups/{rg}"
+                )
+                return
+        elif "{sub}" in item and item != "{sub}":
+            errors.append(
+                f"{loc}: {{sub}} is only allowed as a whole value or inside "
+                "/subscriptions/{sub}/resourceGroups/{rg}"
+            )
+            return
+
+
+def _check_value(value, loc, errors, az=False):
     """Checks shared by every az argument value and PowerShell string."""
     if not isinstance(value, str):
         errors.append(f"{loc}: must be a string")
         return
     if not value:
-        errors.append(f"{loc}: empty value")
+        return
+    if value == "{file}":
         return
     if len(value) > settings.REPRO_MAX_ARG_CHARS:
         errors.append(
@@ -249,13 +289,17 @@ def _check_value(value, loc, errors):
     if value.startswith("@"):
         errors.append(f"{loc}: `@file` arguments are not allowed")
         return
-    for name in ("password", "file"):
-        if "{" + name + "}" in value:
-            errors.append(
-                f"{loc}: {{{name}}} is only allowed as the whole value of a "
-                f"{name} argument"
-            )
+    if "{password}" in value:
+        errors.append(
+            f"{loc}: {{password}} is only allowed as the whole value of a "
+            "password argument"
+        )
+    if "{file}" in value:
+        errors.append(f"{loc}: {{file}} is only allowed as a whole value")
     rest = _strip_placeholders(value)
+    if az:
+        # argv runs without a shell, so a literal empty JSON object is inert.
+        rest = rest.replace("{}", "")
     if "{" in rest or "}" in rest:
         errors.append(
             f"{loc}: braces are only allowed in placeholders "
@@ -267,17 +311,8 @@ def _check_value(value, loc, errors):
             f"{loc}: shell metacharacters, quotes and variable expansion "
             "are not allowed"
         )
-    if "/subscriptions/" in value.lower():
-        if not _RESOURCE_ID.match(value) or _DOT_SEGMENT.search(value):
-            errors.append(
-                f"{loc}: resource IDs must start with "
-                "/subscriptions/{sub}/resourceGroups/{rg}"
-            )
-    elif "{sub}" in value:
-        errors.append(
-            f"{loc}: {{sub}} is only allowed inside "
-            "/subscriptions/{sub}/resourceGroups/{rg}"
-        )
+    if "/subscriptions/" in value.lower() or "{sub}" in value:
+        _check_resource_ids(value, loc, errors)
     elif _LOCAL_PATH.search(value):
         errors.append(f"{loc}: local file paths are not allowed")
     _check_hosts(value, loc, errors)
@@ -437,7 +472,49 @@ def _validate_rest(path, flags, loc, errors):
         errors.append(f"{loc}: `az rest` needs exactly one --url")
 
 
-def _validate_flag(flag, values, floc, errors):
+def _check_location(value, loc, errors):
+    if value != "{location}" and value not in settings.REPRO_ALLOWED_LOCATIONS:
+        errors.append(
+            f"{loc}: the location must be {{location}} or one of "
+            f"{', '.join(settings.REPRO_ALLOWED_LOCATIONS)}"
+        )
+
+
+def _argument_override(path, flag):
+    for command, overrides in settings.REPRO_AZ_ARGUMENT_OVERRIDES.items():
+        if tuple(path[:len(command)]) == command and flag in overrides:
+            return overrides[flag]
+    return None
+
+
+def _validate_override(kind, values, floc, errors):
+    if len(values) != 1:
+        errors.append(f"{floc}: needs exactly one value")
+        return
+    value = values[0]
+    if kind == "value":
+        _check_value(value, floc, errors, az=True)
+    elif kind.startswith("one-of:"):
+        if value not in kind.partition(":")[2].split(","):
+            errors.append(f"{floc}: `{value[:40]}` is not an allowed value")
+    elif kind == "image":
+        host = value.partition("/")[0].lower()
+        if host not in settings.REPRO_ALLOWED_IMAGE_HOSTS:
+            errors.append(
+                f"{floc}: images may only come from "
+                f"{', '.join(settings.REPRO_ALLOWED_IMAGE_HOSTS)}"
+            )
+        else:
+            _check_value(value, floc, errors, az=True)
+    else:
+        errors.append(f"{floc}: argument is not allowed")
+
+
+def _validate_flag(flag, values, floc, errors, path=()):
+    override = _argument_override(path, flag)
+    if override:
+        _validate_override(override, values, floc, errors)
+        return
     if flag in settings.REPRO_AZ_DENIED_ARGUMENTS:
         errors.append(f"{floc}: argument is not allowed")
         return
@@ -458,7 +535,10 @@ def _validate_flag(flag, values, floc, errors):
           or flag.endswith("-resource-group")):
         _check_exact(values, ["{rg}"], floc, errors, "the resource group")
     elif flag in settings.REPRO_AZ_LOCATION_ARGUMENTS:
-        _check_exact(values, ["{location}"], floc, errors, "the location")
+        if len(values) != 1:
+            errors.append(f"{floc}: needs exactly one value")
+        for value in values:
+            _check_location(value, floc, errors)
     elif flag in settings.REPRO_AZ_SKU_ARGUMENTS:
         if len(values) != 1:
             errors.append(f"{floc}: needs exactly one value")
@@ -479,12 +559,13 @@ def _validate_flag(flag, values, floc, errors):
             _check_query(value, floc, errors)
     elif flag in _NAME_FLAGS or (
         flag.endswith("-name") and flag != "--sku-name"
+        and not flag.endswith("-image-name")
     ):
         for value in values:
             _check_name(value, floc, errors)
     else:
         for value in values:
-            _check_value(value, floc, errors)
+            _check_value(value, floc, errors, az=True)
 
 
 def _validate_az_step(step, loc, errors):
@@ -509,6 +590,19 @@ def _validate_az_step(step, loc, errors):
     if not path:
         errors.append(f"{loc}.argv: missing command")
         return None
+    positionals = []
+    if path[:1] == ["config"] and len(path) > 2 and path[1] in (
+        "set", "get", "unset",
+    ):
+        positionals = path[2:]
+        path = path[:2]
+        for token in positionals:
+            if not _CONFIG_SETTING.match(token):
+                errors.append(
+                    f"{loc}.argv: `az config` settings must be "
+                    "<core|output|logging|extension|clients>.<key>[=<value>]"
+                )
+                return None
     bad = [t for t in path if not _COMMAND_TOKEN.match(t)]
     if bad:
         errors.append(
@@ -518,7 +612,9 @@ def _validate_az_step(step, loc, errors):
         for token in bad:
             _check_value(token, f"{loc}.argv", errors)
         return None
-    flags = _parse_flags(tokens[len(path):], f"{loc}.argv", errors)
+    flags = _parse_flags(
+        tokens[len(path) + len(positionals):], f"{loc}.argv", errors,
+    )
     command = " ".join(["az", *path])
     if path[0] == "rest":
         _validate_rest(path, flags, f"{loc} `{command}`", errors)
@@ -528,7 +624,9 @@ def _validate_az_step(step, loc, errors):
         )
     else:
         for flag, values in flags:
-            _validate_flag(flag, values, f"{loc} `{command}` {flag}", errors)
+            _validate_flag(
+                flag, values, f"{loc} `{command}` {flag}", errors, path,
+            )
     return {"argv": list(argv)}
 
 
@@ -611,7 +709,7 @@ def _check_ps_value(key, value, loc, errors):
     elif lowered.endswith("resourcegroupname"):
         _check_exact(value, "{rg}", loc, errors, "the resource group")
     elif lowered == "location":
-        _check_exact(value, "{location}", loc, errors, "the location")
+        _check_location(value, loc, errors)
     elif lowered in settings.REPRO_PS_SKU_PARAMETERS:
         _check_sku(value, loc, errors)
     elif lowered in settings.REPRO_PS_COUNT_PARAMETERS:
@@ -738,6 +836,61 @@ def _tool_matches_repository(tool, repository, errors):
         errors.append(f"tool: `{tool}` reproduces Azure CLI issues only")
 
 
+def _validate_input_file(value, errors):
+    """Content written to repro-input.<ext>, which {file} points at."""
+    loc = "input_file"
+    if not isinstance(value, dict) or set(value) != {"extension", "content"}:
+        errors.append(f"{loc}: must be an object with extension and content")
+        return None
+    extension, content = value["extension"], value["content"]
+    if extension not in settings.REPRO_INPUT_FILE_EXTENSIONS:
+        errors.append(
+            f"{loc}.extension: must be one of "
+            f"{list(settings.REPRO_INPUT_FILE_EXTENSIONS)}"
+        )
+        return None
+    loc = f"{loc}.content"
+    if isinstance(content, str):
+        content = content.replace("\r\n", "\n")
+    if not isinstance(content, str) or not content:
+        errors.append(f"{loc}: must be a non-empty string")
+        return None
+    if len(content) > settings.REPRO_MAX_INPUT_FILE_CHARS:
+        errors.append(
+            f"{loc}: longer than {settings.REPRO_MAX_INPUT_FILE_CHARS} "
+            "characters"
+        )
+        return None
+    before = len(errors)
+    if _INPUT_FILE_CONTROL.search(content):
+        errors.append(f"{loc}: control characters other than newline and tab "
+                      "are not allowed")
+    if "{password}" in content or "{file}" in content:
+        errors.append(f"{loc}: {{password}} and {{file}} are not allowed")
+    if "/subscriptions/" in content.lower() or "{sub}" in content:
+        _check_resource_ids(content, loc, errors)
+    _check_hosts(content, loc, errors)
+    _check_sensitive(content, loc, errors)
+    if len(errors) != before:
+        return None
+    return {"extension": extension, "content": content}
+
+
+def input_file_name(spec):
+    """File name the runner writes input_file to, or None."""
+    input_file = (spec or {}).get("input_file")
+    if not input_file:
+        return None
+    return f"repro-input.{input_file['extension']}"
+
+
+def _uses_file_placeholder(steps):
+    return any(
+        "{file}" in json.dumps(step.get("argv") or step.get("parameters"))
+        for step in steps
+    )
+
+
 def validate_spec(spec):
     """Validate and normalize a ReproSpec without touching the network.
 
@@ -823,6 +976,10 @@ def validate_spec(spec):
         )
         workdir_dirs = []
 
+    input_file = None
+    if "input_file" in spec:
+        input_file = _validate_input_file(spec["input_file"], errors)
+
     ps = tool == "pwsh-az"
     setup = _validate_steps(spec.get("setup"), "setup", ps, errors)
     repro = _validate_steps(spec.get("repro"), "repro", ps, errors)
@@ -867,6 +1024,9 @@ def validate_spec(spec):
             observed, "observed_in_issue", errors, _OBSERVED_KEYS,
         )
 
+    if input_file is not None and not _uses_file_placeholder(setup + repro):
+        errors.append("input_file: no step uses {file}")
+
     if errors:
         return {"valid": False, "errors": errors, "spec": None,
                 "spec_hash": None}
@@ -887,6 +1047,8 @@ def validate_spec(spec):
         normalized["module"] = module
     if workdir_dirs:
         normalized["workdir_dirs"] = sorted(workdir_dirs)
+    if input_file is not None:
+        normalized["input_file"] = input_file
     return {
         "valid": True, "errors": [], "spec": normalized,
         "spec_hash": _hash_canonical(canonical_spec_json(normalized)),
@@ -990,6 +1152,10 @@ def resolve_placeholders(spec, values, *, strict=True):
                     key: resolve(value)
                     for key, value in step["parameters"].items()
                 }
+    if resolved.get("input_file"):
+        resolved["input_file"]["content"] = resolve(
+            resolved["input_file"]["content"]
+        )
     if strict and missing:
         raise ReproSpecError([
             f"placeholders without values: {', '.join(sorted(missing))}"

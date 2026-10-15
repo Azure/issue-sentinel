@@ -798,3 +798,20 @@ def test_janitor_selects_only_expired_reproduction_groups():
         repro_janitor.PREFIX + "garbage", repro_janitor.PREFIX + "old",
         repro_janitor.PREFIX + "untagged",
     ]
+
+
+def test_prepare_run_writes_input_file(tmp_path):
+    spec = repro_spec.validate_spec({
+        "issue": ISSUE, "tool": "az",
+        "repro": [{"argv": ["az", "bicep", "build", "--file", "{file}"]}],
+        "observed_in_issue": {"exit_code": 1},
+        "input_file": {"extension": "bicep",
+                       "content": "param l string = '{location}'\n"},
+    })["spec"]
+    values, resolved = repro_runner.prepare_run(
+        spec, resource_group="rg", run_id="1", work_dir=tmp_path / "w",
+    )
+    assert values["file"] == "repro-input.bicep"
+    assert resolved["repro"][0]["argv"][-1] == "repro-input.bicep"
+    text = (tmp_path / "w" / "repro-input.bicep").read_text()
+    assert text == f"param l string = '{spec['location']}'\n"

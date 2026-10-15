@@ -72,7 +72,7 @@ AZ_CORPUS = {
     "resource-id-literal-sub": ("monitor", "metrics", "list", "--resource", f"/subscriptions/{GUID}/resourceGroups/{{rg}}"),
     "other-rg": ("storage", "account", "list", "-g", "production-rg"),
     "other-rg-long": ("storage", "account", "list", "--resource-group", "prod"),
-    "sub-placeholder-outside-id": ("storage", "account", "list", "-g", "{rg}", "--tags", "s={sub}"),
+    "sub-placeholder-outside-id": ("storage", "account", "list", "-g", "{rg}", "--tags", "s=x{sub}"),
     # @file, local files and scripts.
     "at-file": ("storage", "account", "create", "-g", "{rg}", "-n", "{name1}", "--tags", "@/home/runner/.azure/azureProfile.json"),
     "at-file-query": ("storage", "account", "list", "-g", "{rg}", "--query", "@q.txt"),
@@ -126,7 +126,7 @@ AZ_CORPUS = {
     "policy": ("policy", "assignment", "delete", "-n", "x"),
     "lock": ("lock", "delete", "-n", "x"),
     "group-delete": ("group", "delete", "-n", "{rg}", "--yes"),
-    "config": ("config", "get"),
+    "config": ("config", "param-persist", "on"),
     "upgrade": ("upgrade",),
     "unknown-group": ("bogus", "command"),
     # Cost and size limits.
