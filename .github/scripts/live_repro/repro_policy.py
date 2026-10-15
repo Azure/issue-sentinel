@@ -23,6 +23,8 @@ LIVE_REPRO_POWERSHELL_WORKFLOW = os.environ.get(
 
 REPRO_SCHEMA_VERSION = 1
 REPRO_MAX_STEPS = 10
+# Empty directories created in the step working directory (cwd-dependent bugs).
+REPRO_MAX_WORKDIR_DIRS = 5
 REPRO_MAX_ARGS_PER_STEP = 40
 REPRO_MAX_ARG_CHARS = 256
 REPRO_MAX_QUERY_CHARS = 512
