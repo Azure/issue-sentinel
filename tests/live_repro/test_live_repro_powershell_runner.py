@@ -1037,7 +1037,7 @@ def test_ps1_reports_errors_with_code_and_warnings_on_stderr(fake_home):
     ({"AzContext": "x"}, "-AzContext is not allowed"),
     ({"DefaultProfile": "x"}, "-DefaultProfile is not allowed"),
     ({"Debug": True}, "-Debug is not allowed"),
-    ({"ErrorAction": "Ignore"}, "-ErrorAction is not allowed"),
+    ({"ErrorAction": "Inquire"}, "-ErrorAction must be Stop"),
     ({"OutVariable": "x"}, "-OutVariable is not allowed"),
     ({"DefaultP": "x"}, "-DefaultP is not a parameter"),
     ({"ResourceGroupN": "x"}, "-ResourceGroupN is not a parameter"),

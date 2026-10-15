@@ -231,7 +231,10 @@ function Invoke-ReproStep($Request) {
         $splat[$metadata.Name] = ConvertTo-ParameterValue $parameters[$key] $metadata
     }
     if ($command.Parameters.ContainsKey('Confirm')) { $splat['Confirm'] = $false }
-    $splat['ErrorAction'] = 'Stop'
+    if (-not $splat.ContainsKey('ErrorAction')) { $splat['ErrorAction'] = 'Stop' }
+    elseif ([string]$splat['ErrorAction'] -notin 'Stop', 'Continue', 'SilentlyContinue', 'Ignore') {
+        Stop-Rejected '-ErrorAction must be Stop, Continue, SilentlyContinue or Ignore'
+    }
     $splat['WarningAction'] = 'SilentlyContinue'
     $splat['WarningVariable'] = 'reproWarnings'
     $reproWarnings = $null
