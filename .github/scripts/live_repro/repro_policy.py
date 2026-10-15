@@ -56,7 +56,7 @@ REPRO_RESOURCE_GROUP_TTL_HOURS = 6
 REPRO_ALLOWED_LOCATIONS = (
     "westus3", "eastus2", "eastus", "westus2", "centralus",
     "northeurope", "westeurope", "uksouth", "australiaeast",
-    "southeastasia",
+    "southeastasia", "global",
 )
 REPRO_DEFAULT_LOCATION = "westus3"
 
@@ -89,12 +89,14 @@ REPRO_AZ_ALLOWED_COMMANDS = tuple(tuple(c.split()) for c in (
     "backup", "batch", "iot", "relay", "notification-hub", "dns",
     "private-dns", "afd", "cdn", "loganalytics",
     "aks", "sig", "devcenter", "grafana", "communication", "databricks",
+    "bicep", "confcom", "k8s-extension", "extension",
+    "cloud show", "cloud list", "cloud list-profiles", "cloud set",
 ))
 
 # Denied even inside an allowed group (prefix match), plus groups that must never run.
 REPRO_AZ_DENIED_COMMANDS = tuple(tuple(c.split()) for c in (
-    "login", "logout", "account", "ad", "role", "rest", "config", "cloud",
-    "extension", "upgrade", "self-test", "interactive", "find", "bicep",
+    "login", "logout", "account", "ad", "role", "rest", "config",
+    "cloud register", "cloud update", "cloud unregister", "upgrade", "self-test", "interactive", "find", "bicep publish",
     "deployment", "deployment-scripts", "ts", "policy", "lock", "feature",
     "ssh", "tag", "group create", "group delete", "group update",
     "keyvault secret", "keyvault key download", "keyvault key backup",
@@ -104,8 +106,8 @@ REPRO_AZ_DENIED_COMMANDS = tuple(tuple(c.split()) for c in (
     "container exec", "container attach", "webapp up", "webapp ssh",
     "webapp deploy", "webapp deployment", "webapp create-remote-connection",
     "functionapp deploy", "functionapp deployment", "staticwebapp secrets",
-    "vm run-command", "vm extension", "vm user", "vm secret",
-    "vm access", "vmss run-command", "vmss extension", "network bastion",
+    "vm run-command", "vm extension", "vm secret",
+    "vm access", "vmss run-command", "vmss extension",
     "aks command", "aks install-cli", "aks browse", "aks kollect",
     "aks bastion", "aks check-acr", "aks rotate-certs", "sig share",
     "communication phonenumber", "communication phonenumbers",
@@ -137,6 +139,7 @@ REPRO_AZ_DENIED_ARGUMENTS = frozenset({
     "--headers", "--sas-token", "--account-key", "--connection-string",
     "--ssh-key-values", "--ssh-key-value", "--skip-authorization-header",
     "--secrets", "--secret-value", "--attach-acr",
+    "--pip-extra-index-urls", "--pip-proxy",
 })
 # Value must be the workflow-generated {file}.
 REPRO_AZ_FILE_ARGUMENTS = frozenset({
@@ -183,6 +186,7 @@ REPRO_PLACEHOLDER_HOST_SUFFIXES = (
 REPRO_PS_ALLOWED_VERBS = frozenset({
     "Get", "New", "Set", "Update", "Remove", "Add", "Start", "Stop",
     "Restart", "Test", "Enable", "Disable", "Move", "Reset", "Resize",
+    "Copy", "Initialize", "Invoke", "Export", "Import",
 })
 REPRO_PS_ALLOWED_NOUN_PREFIXES = {
     "Storage": None, "KeyVault": None, "VirtualNetwork": None,
@@ -200,6 +204,9 @@ REPRO_PS_ALLOWED_NOUN_PREFIXES = {
     "ResourceGroup": ("Get",), "Resource": ("Get",),
     "ResourceProvider": ("Get",), "Location": ("Get",),
     "AutoscaleSetting": None, "Aks": None, "DataFactoryV2": None,
+    "CostManagement": ("Get", "Invoke"), "PolicyState": ("Get",),
+    "PolicyRemediation": ("Get",), "PortalDashboard": None,
+    "ApiManagement": None,
 }
 # The workflow installs exactly these modules; a new noun prefix needs its module here.
 REPRO_PS_NOUN_MODULES = {
@@ -225,14 +232,18 @@ REPRO_PS_NOUN_MODULES = {
     "Resource": "Az.Resources", "ResourceProvider": "Az.Resources",
     "Location": "Az.Resources", "AutoscaleSetting": "Az.Monitor",
     "Aks": "Az.Aks", "DataFactoryV2": "Az.DataFactory",
+    "CostManagement": "Az.CostManagement", "PolicyState": "Az.PolicyInsights",
+    "PolicyRemediation": "Az.PolicyInsights", "PortalDashboard": "Az.Portal",
+    "ApiManagement": "Az.ApiManagement",
 }
 REPRO_PS_ALLOWED_MODULES = frozenset(REPRO_PS_NOUN_MODULES.values())
 # Denied noun patterns (case-sensitive regexes).
 REPRO_PS_DENIED_NOUN_PATTERNS = (
     r"Key$", r"Keys$", r"Credential", r"Secret", r"Password", r"Token",
     r"Sas", r"ConnectionString", r"PublishingProfile", r"RunCommand",
-    r"Extension", r"AccessPolicy", r"Role", r"Policy", r"Lock",
-    r"Deployment", r"^AzAD", r"Context", r"Subscription", r"Tenant",
+    r"Extension", r"AccessPolicy", r"Role",
+    r"^AzPolicy(?!State|Remediation)", r"Lock", r"Deployment", r"^AzAD",
+    r"Context", r"Subscription", r"Tenant", r"RestMethod",
 )
 REPRO_PS_DENIED_PARAMETERS = frozenset(p.casefold() for p in (
     "Subscription", "SubscriptionId", "SubscriptionName", "Tenant",
@@ -246,7 +257,7 @@ REPRO_PS_DENIED_PARAMETERS = frozenset(p.casefold() for p in (
     "FileUri", "SshKeyValue", "ShowSecret", "AzureRmContext",
     "AzureCredential",
     # Common parameters the workflow controls.
-    "Debug", "Verbose", "ErrorAction", "WarningAction", "InformationAction",
+    "Debug", "Verbose", "WarningAction", "InformationAction",
     "ProgressAction", "ErrorVariable", "WarningVariable",
     "InformationVariable", "OutVariable", "OutBuffer", "PipelineVariable",
     "AsJob", "Confirm",
