@@ -150,6 +150,12 @@ _ARM_URL = re.compile(
 )
 _API_VERSION_PARAM = re.compile(r"^api-version=\d{4}-\d{2}-\d{2}(?:-preview)?$")
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+_IMAGE_COMPONENT = r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*"
+_IMAGE_REF = re.compile(
+    r"^(?i:" + "|".join(map(re.escape, settings.REPRO_ALLOWED_IMAGE_HOSTS))
+    + rf")(?:/{_IMAGE_COMPONENT})+"
+    r"(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@sha256:[0-9a-f]{64})?$"
+)
 _LOCAL_PATH = re.compile(r"^(?:/|~|[A-Za-z]:[\\/])|(?:^|[\\/])\.\.(?:[\\/]|$)")
 _PS_CMDLET = re.compile(r"^([A-Z][a-z]+)-Az([A-Za-z][A-Za-z0-9]{1,80})$")
 _PS_PARAMETER = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,63}$")
@@ -498,16 +504,32 @@ def _validate_override(kind, values, floc, errors):
         if value not in kind.partition(":")[2].split(","):
             errors.append(f"{floc}: `{value[:40]}` is not an allowed value")
     elif kind == "image":
-        host = value.partition("/")[0].lower()
-        if host not in settings.REPRO_ALLOWED_IMAGE_HOSTS:
-            errors.append(
-                f"{floc}: images may only come from "
-                f"{', '.join(settings.REPRO_ALLOWED_IMAGE_HOSTS)}"
-            )
-        else:
-            _check_value(value, floc, errors, az=True)
+        _check_image(value, floc, errors)
     else:
         errors.append(f"{floc}: argument is not allowed")
+
+
+def _check_image(value, loc, errors):
+    """Container images must be fully qualified on an allowlisted registry."""
+    before = len(errors)
+    _check_value(value, loc, errors)
+    if len(errors) == before and not _IMAGE_REF.match(value):
+        errors.append(
+            f"{loc}: container images must be fully qualified references on "
+            f"{', '.join(settings.REPRO_ALLOWED_IMAGE_HOSTS)}"
+        )
+
+
+def _is_az_image_flag(path, flag):
+    if not path or path[0] not in settings.REPRO_AZ_CONTAINER_IMAGE_GROUPS:
+        return False
+    if flag.startswith("--"):
+        return "image" in flag
+    return any(
+        tuple(path[:len(prefix)]) == prefix and flag in aliases
+        for prefix, aliases in
+        settings.REPRO_AZ_CONTAINER_IMAGE_SHORT_ARGUMENTS.items()
+    )
 
 
 def _validate_flag(flag, values, floc, errors, path=()):
@@ -527,7 +549,12 @@ def _validate_flag(flag, values, floc, errors, path=()):
             f"{floc}: abbreviation of a restricted argument is not allowed"
         )
         return
-    if flag in settings.REPRO_AZ_FILE_ARGUMENTS:
+    if _is_az_image_flag(path, flag):
+        if len(values) != 1:
+            errors.append(f"{floc}: needs exactly one value")
+        for value in values:
+            _check_image(value, floc, errors)
+    elif flag in settings.REPRO_AZ_FILE_ARGUMENTS:
         _check_exact(values, ["{file}"], floc, errors, "the value")
     elif flag in settings.REPRO_AZ_PASSWORD_ARGUMENTS:
         _check_exact(values, ["{password}"], floc, errors, "the value")
@@ -623,6 +650,12 @@ def _validate_az_step(step, loc, errors):
             f"{loc}: `{command}` is not an allowed reproduction command"
         )
     else:
+        if (path[0] in settings.REPRO_AZ_NO_INPUT_FILE_GROUPS
+                and "{file}" in argv):
+            errors.append(
+                f"{loc} `{command}`: {{file}} cannot be passed to "
+                f"`az {path[0]}` commands"
+            )
         for flag, values in flags:
             _validate_flag(
                 flag, values, f"{loc} `{command}` {flag}", errors, path,
@@ -733,6 +766,11 @@ def _validate_ps_step(step, loc, errors):
             f"{loc}.parameters: more than {settings.REPRO_MAX_PS_PARAMETERS}"
         )
         return None
+    noun = _ps_noun_prefix(_PS_CMDLET.match(cmdlet).group(2))
+    image_noun = noun in settings.REPRO_PS_CONTAINER_IMAGE_NOUN_PREFIXES
+    if (noun in settings.REPRO_PS_NO_INPUT_FILE_NOUN_PREFIXES
+            and "{file}" in json.dumps(parameters)):
+        errors.append(f"{loc}: {{file}} cannot be passed to `{cmdlet}`")
     seen = set()
     for key, value in parameters.items():
         ploc = f"{loc}.parameters.{str(key)[:40]}"
@@ -753,6 +791,12 @@ def _validate_ps_step(step, loc, errors):
             errors.append(
                 f"{ploc}: abbreviation of a restricted parameter is not allowed"
             )
+            continue
+        if "image" in lowered and image_noun:
+            if not isinstance(value, str):
+                errors.append(f"{ploc}: needs exactly one image")
+            else:
+                _check_image(value, ploc, errors)
             continue
         _check_ps_value(key, value, ploc, errors)
     return {"cmdlet": cmdlet, "parameters": dict(parameters)}

