@@ -155,7 +155,7 @@ REPRO_AZ_DENIED_ARGUMENTS = frozenset({
     "--assignee-object-id", "--role", "--show-values", "--show-secrets",
     "--headers", "--sas-token", "--account-key", "--connection-string",
     "--ssh-key-values", "--ssh-key-value", "--skip-authorization-header",
-    "--secrets", "--secret-value", "--attach-acr",
+    "--secrets", "--secret-value", "--attach-acr", "--command-line", "--args",
     "--pip-extra-index-urls", "--pip-proxy",
 })
 # Value must be the workflow-generated {file}.
@@ -189,6 +189,39 @@ REPRO_AZ_OUTPUT_FORMATS = frozenset({
 
 # Container images may only come from these registries.
 REPRO_ALLOWED_IMAGE_HOSTS = ("mcr.microsoft.com",)
+# In these az groups every argument containing "image" takes a container image.
+REPRO_AZ_CONTAINER_IMAGE_GROUPS = frozenset({
+    "container", "containerapp", "functionapp", "webapp", "logicapp",
+})
+# Short aliases of those image arguments, per command prefix. -i and -c mean other
+# things elsewhere (containerapp env -i, functionapp create -c), so stay exact.
+REPRO_AZ_CONTAINER_IMAGE_SHORT_ARGUMENTS = {
+    ("containerapp", "create"): frozenset({"-i"}),
+    ("containerapp", "update"): frozenset({"-i"}),
+    ("containerapp", "up"): frozenset({"-i"}),
+    ("containerapp", "revision", "copy"): frozenset({"-i"}),
+    ("containerapp", "github-action", "add"): frozenset({"-i"}),
+    ("containerapp", "sessionpool"): frozenset({"-i"}),
+    ("functionapp", "create"): frozenset({"-i"}),
+    ("functionapp", "config", "container"): frozenset({"-c", "-i"}),
+    ("webapp", "create"): frozenset({"-c", "-i"}),
+    ("webapp", "config", "container"): frozenset({"-c", "-i"}),
+    ("logicapp", "create"): frozenset({"-i"}),
+}
+# PowerShell noun prefixes whose *Image* parameters take a container image.
+REPRO_PS_CONTAINER_IMAGE_NOUN_PREFIXES = frozenset({
+    "ContainerGroup", "ContainerApp", "WebApp", "FunctionApp",
+})
+# {file} may not be passed here: these files define containers, build tasks, start
+# commands or pipelines whose images and commands the validator cannot check.
+REPRO_AZ_NO_INPUT_FILE_GROUPS = frozenset({
+    "container", "containerapp", "functionapp", "webapp", "logicapp", "acr",
+    "batch",
+})
+REPRO_PS_NO_INPUT_FILE_NOUN_PREFIXES = frozenset({
+    "ContainerGroup", "ContainerApp", "WebApp", "FunctionApp",
+    "ContainerRegistry", "DataFactoryV2",
+})
 # URLs may only point at resources the run creates: {nameN} plus one of these suffixes.
 REPRO_PLACEHOLDER_HOST_SUFFIXES = (
     ".blob.core.windows.net", ".file.core.windows.net",
@@ -272,7 +305,7 @@ REPRO_PS_DENIED_PARAMETERS = frozenset(p.casefold() for p in (
     "ObjectId", "ApplicationId", "ServicePrincipalName", "SignInName",
     "AccessToken", "SasToken", "StorageAccountKey", "ConnectionString",
     "FileUri", "SshKeyValue", "ShowSecret", "AzureRmContext",
-    "AzureCredential",
+    "AzureCredential", "Arg", "Args", "Argument", "CommandLine",
     # Common parameters the workflow controls.
     "Debug", "Verbose", "WarningAction", "InformationAction",
     "ProgressAction", "ErrorVariable", "WarningVariable",
