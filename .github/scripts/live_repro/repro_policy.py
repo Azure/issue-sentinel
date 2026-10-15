@@ -88,6 +88,7 @@ REPRO_AZ_ALLOWED_COMMANDS = tuple(tuple(c.split()) for c in (
     "postgres", "mysql", "search", "signalr", "staticwebapp", "logicapp",
     "backup", "batch", "iot", "relay", "notification-hub", "dns",
     "private-dns", "afd", "cdn", "loganalytics",
+    "aks", "sig", "devcenter", "grafana", "communication", "databricks",
 ))
 
 # Denied even inside an allowed group (prefix match), plus groups that must never run.
@@ -95,7 +96,7 @@ REPRO_AZ_DENIED_COMMANDS = tuple(tuple(c.split()) for c in (
     "login", "logout", "account", "ad", "role", "rest", "config", "cloud",
     "extension", "upgrade", "self-test", "interactive", "find", "bicep",
     "deployment", "deployment-scripts", "ts", "policy", "lock", "feature",
-    "ssh", "aks", "tag", "group create", "group delete", "group update",
+    "ssh", "tag", "group create", "group delete", "group update",
     "keyvault secret", "keyvault key download", "keyvault key backup",
     "keyvault certificate download", "keyvault certificate backup",
     "keyvault set-policy", "keyvault delete-policy", "keyvault role",
@@ -105,6 +106,9 @@ REPRO_AZ_DENIED_COMMANDS = tuple(tuple(c.split()) for c in (
     "functionapp deploy", "functionapp deployment", "staticwebapp secrets",
     "vm run-command", "vm extension", "vm user", "vm secret",
     "vm access", "vmss run-command", "vmss extension", "network bastion",
+    "aks command", "aks install-cli", "aks browse", "aks kollect",
+    "aks bastion", "aks check-acr", "aks rotate-certs", "sig share",
+    "communication phonenumber", "communication phonenumbers",
 ))
 
 # Command-path tokens denied anywhere (credential and remote-exec verbs).
@@ -117,7 +121,7 @@ REPRO_AZ_DENIED_COMMAND_TOKENS = frozenset({
     "run-command", "exec", "attach", "ssh", "tunnel", "console",
     "remote-connection", "create-remote-connection", "access-token",
     "get-access-token", "role-assignment", "role-assignments",
-    "authorization-rule",
+    "authorization-rule", "token", "tokens", "api-key", "api-keys",
 })
 
 # az rest is denied except GET on ARM inside the run's resource group.
@@ -132,7 +136,7 @@ REPRO_AZ_DENIED_ARGUMENTS = frozenset({
     "--assignee-object-id", "--role", "--show-values", "--show-secrets",
     "--headers", "--sas-token", "--account-key", "--connection-string",
     "--ssh-key-values", "--ssh-key-value", "--skip-authorization-header",
-    "--secrets", "--secret-value",
+    "--secrets", "--secret-value", "--attach-acr",
 })
 # Value must be the workflow-generated {file}.
 REPRO_AZ_FILE_ARGUMENTS = frozenset({
@@ -157,7 +161,7 @@ REPRO_AZ_SKU_ARGUMENTS = frozenset({
 })
 REPRO_AZ_COUNT_ARGUMENTS = frozenset({
     "--count", "--instance-count", "--node-count", "--capacity",
-    "--number-of-workers", "--replica-count",
+    "--number-of-workers", "--replica-count", "--min-count", "--max-count",
 })
 REPRO_AZ_OUTPUT_FORMATS = frozenset({
     "json", "jsonc", "table", "tsv", "yaml", "yamlc", "none",
@@ -195,6 +199,7 @@ REPRO_PS_ALLOWED_NOUN_PREFIXES = {
     "PostgreSqlFlexibleServer": None, "MySqlFlexibleServer": None,
     "ResourceGroup": ("Get",), "Resource": ("Get",),
     "ResourceProvider": ("Get",), "Location": ("Get",),
+    "AutoscaleSetting": None, "Aks": None, "DataFactoryV2": None,
 }
 # The workflow installs exactly these modules; a new noun prefix needs its module here.
 REPRO_PS_NOUN_MODULES = {
@@ -218,7 +223,8 @@ REPRO_PS_NOUN_MODULES = {
     "PostgreSqlFlexibleServer": "Az.PostgreSql",
     "MySqlFlexibleServer": "Az.MySql", "ResourceGroup": "Az.Resources",
     "Resource": "Az.Resources", "ResourceProvider": "Az.Resources",
-    "Location": "Az.Resources",
+    "Location": "Az.Resources", "AutoscaleSetting": "Az.Monitor",
+    "Aks": "Az.Aks", "DataFactoryV2": "Az.DataFactory",
 }
 REPRO_PS_ALLOWED_MODULES = frozenset(REPRO_PS_NOUN_MODULES.values())
 # Denied noun patterns (case-sensitive regexes).
@@ -249,8 +255,9 @@ REPRO_PS_FILE_PARAMETERS = frozenset(p.casefold() for p in (
     "File", "FilePath", "Path", "Source", "SourcePath", "LocalPath",
 ))
 REPRO_PS_SKU_PARAMETERS = frozenset(p.casefold() for p in (
-    "Sku", "SkuName", "Size", "VmSize", "Tier", "SkuTier",
+    "Sku", "SkuName", "Size", "VmSize", "Tier", "SkuTier", "NodeVmSize",
 ))
 REPRO_PS_COUNT_PARAMETERS = frozenset(p.casefold() for p in (
-    "Capacity", "InstanceCount", "Count", "NumberOfWorkers",
+    "Capacity", "InstanceCount", "Count", "NumberOfWorkers", "NodeCount",
+    "NodeMinCount", "NodeMaxCount",
 ))
