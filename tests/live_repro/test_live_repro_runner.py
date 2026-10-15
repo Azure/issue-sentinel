@@ -579,6 +579,17 @@ def test_execute_reproduces_without_printing_output(tmp_path, monkeypatch, capsy
     assert f"/subscriptions/{SUB}/resourceGroups/{group}/" in stdout
 
 
+def test_prepare_run_creates_requested_empty_workdir_dirs(tmp_path):
+    spec = repro_spec.validate_spec(_spec(workdir_dirs=["redis"]))["spec"]
+    repro_runner.prepare_run(
+        spec, resource_group="rg", run_id="1-latest", subscription_id=SUB,
+        work_dir=tmp_path / "work",
+    )
+    assert (tmp_path / "work" / "redis").is_dir()
+    assert not any((tmp_path / "work" / "redis").iterdir())
+    assert not repro_spec.validate_spec(_spec(workdir_dirs=["../x"]))["valid"]
+
+
 @pytest.mark.parametrize("mode, status, reproduced", [
     ("not_reproduced", "completed", False),
     ("setup_fail", "setup_failed", None),

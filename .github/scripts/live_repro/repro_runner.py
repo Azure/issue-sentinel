@@ -675,6 +675,8 @@ def prepare_run(spec, *, resource_group, run_id, subscription_id=None,
         shutil.rmtree(work_dir)
     work_dir.mkdir(parents=True)
     (work_dir / INPUT_FILE_NAME).write_text(INPUT_FILE_TEXT, encoding="utf-8")
+    for name in spec.get("workdir_dirs", []):
+        (work_dir / name).mkdir()
     digest = repro_spec._hash_canonical(repro_spec.canonical_spec_json(spec))
     password = generate_password()
     values = repro_spec.placeholder_values(

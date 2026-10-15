@@ -40,6 +40,13 @@ REPRO_SPEC_SCHEMA = {
         "reported_version": {"type": "string"},
         "module": {"type": "string", "pattern": r"^Az\.[A-Za-z]{2,40}$"},
         "location": {"enum": list(settings.REPRO_ALLOWED_LOCATIONS)},
+        "workdir_dirs": {
+            "type": "array", "uniqueItems": True,
+            "maxItems": settings.REPRO_MAX_WORKDIR_DIRS,
+            "items": {
+                "type": "string", "pattern": r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$",
+            },
+        },
         "setup": {"type": "array", "items": {"$ref": "#/$defs/step"}},
         "repro": {
             "type": "array", "minItems": 1,
@@ -129,10 +136,12 @@ _LOCAL_PATH = re.compile(r"^(?:/|~|[A-Za-z]:[\\/])|(?:^|[\\/])\.\.(?:[\\/]|$)")
 _PS_CMDLET = re.compile(r"^([A-Z][a-z]+)-Az([A-Za-z][A-Za-z0-9]{1,80})$")
 _PS_PARAMETER = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,63}$")
 _PS_MODULE = re.compile(r"^Az\.[A-Za-z]{2,40}$")
+_WORKDIR_DIR = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
 _TOP_KEYS = frozenset({
     "schema_version", "issue", "tool", "versions", "reported_version",
     "module",
     "location", "setup", "repro", "observed_in_issue", "timeout_minutes",
+    "workdir_dirs",
 })
 _OBSERVED_KEYS = frozenset({"exit_code", "error_substring", "output_substring"})
 _EXPECT_KEYS = frozenset({"exit_code", "error_substring"})
@@ -802,6 +811,18 @@ def validate_spec(spec):
             f"timeout_minutes: must be 1..{settings.REPRO_MAX_TIMEOUT_MINUTES}"
         )
 
+    workdir_dirs = spec.get("workdir_dirs", [])
+    if (not isinstance(workdir_dirs, list)
+            or len(workdir_dirs) > settings.REPRO_MAX_WORKDIR_DIRS
+            or len(set(map(str, workdir_dirs))) != len(workdir_dirs)
+            or any(not isinstance(d, str) or not _WORKDIR_DIR.match(d)
+                   for d in workdir_dirs)):
+        errors.append(
+            f"workdir_dirs: at most {settings.REPRO_MAX_WORKDIR_DIRS} unique "
+            "plain directory names (letters, digits, `_`, `-`)"
+        )
+        workdir_dirs = []
+
     ps = tool == "pwsh-az"
     setup = _validate_steps(spec.get("setup"), "setup", ps, errors)
     repro = _validate_steps(spec.get("repro"), "repro", ps, errors)
@@ -864,6 +885,8 @@ def validate_spec(spec):
         normalized["reported_version"] = reported_version
     if ps:
         normalized["module"] = module
+    if workdir_dirs:
+        normalized["workdir_dirs"] = sorted(workdir_dirs)
     return {
         "valid": True, "errors": [], "spec": normalized,
         "spec_hash": _hash_canonical(canonical_spec_json(normalized)),

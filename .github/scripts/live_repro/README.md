@@ -29,7 +29,8 @@ Paths below are relative to the repository root.
   (`github.sha`), never from the dispatch inputs.
 - The spec input must be the canonical JSON of a valid spec whose SHA-256 is
   `spec_hash`; every job re-validates it before running anything.
-- Steps run as argv lists in an empty directory with a minimal environment
+- Steps run as argv lists in a fresh directory (holding only the input file
+  and any empty `workdir_dirs` the spec names) with a minimal environment
   (no GitHub or OIDC request tokens). Output goes to `repro/raw` and never to
   the log; only exit codes and verdicts are printed.
 - Sanitizing runs after sign-out. Only `repro.redacted.json` is uploaded:
