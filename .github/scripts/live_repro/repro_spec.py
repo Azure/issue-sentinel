@@ -1,5 +1,5 @@
 # GENERATED FILE - DO NOT EDIT.
-# Vendored from x-engineering-agent `src/tools/live_tests/reproduction.py` by
+# Vendored from x-engineering-agent `src/tools/live_tests/reproduction` by
 # `scripts/sync_issue_sentinel_repro.py`; edit the source and re-run it.
 """ReproSpec validation, hashing and placeholders copied from the Agent."""
 
@@ -425,6 +425,9 @@ def _parse_flags(tokens, loc, errors):
     return flags
 
 
+_SIGN_IN_GROUPS = frozenset({"login", "logout", "account"})
+
+
 def _command_allowed(path):
     def matches(rule):
         return tuple(path[:len(rule)]) == rule
@@ -646,8 +649,15 @@ def _validate_az_step(step, loc, errors):
     if path[0] == "rest":
         _validate_rest(path, flags, f"{loc} `{command}`", errors)
     elif not _command_allowed(path):
+        hint = ""
+        if path[0] in _SIGN_IN_GROUPS:
+            hint = (
+                "; the sandbox is already signed in, so reproduce startup, "
+                "import or credential failures with an allowed ARM read "
+                "such as `az group list`, which loads the same credential path"
+            )
         errors.append(
-            f"{loc}: `{command}` is not an allowed reproduction command"
+            f"{loc}: `{command}` is not an allowed reproduction command{hint}"
         )
     else:
         if (path[0] in settings.REPRO_AZ_NO_INPUT_FILE_GROUPS
