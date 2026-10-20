@@ -815,3 +815,86 @@ def test_prepare_run_writes_input_file(tmp_path):
     assert resolved["repro"][0]["argv"][-1] == "repro-input.bicep"
     text = (tmp_path / "w" / "repro-input.bicep").read_text()
     assert text == f"param l string = '{spec['location']}'\n"
+
+
+# Operating systems and shell steps (azure: false) ---------------------------
+
+def _local_spec(**overrides):
+    spec = {
+        "issue": ISSUE, "tool": "az", "os": "windows", "azure": False,
+        "versions": ["latest", "dev"],
+        "repro": [{"shell": "bash", "script": 'source "$REPRO_SOURCE_DIR/az.completion"\necho done\n'}],
+        "observed_in_issue": {"output_substring": "done"},
+    }
+    spec.update(overrides)
+    return spec
+
+
+def test_verify_publishes_runner_os_and_azure_mode(tmp_path, monkeypatch):
+    for spec, runs_on, azure in ((_spec(), "ubuntu-latest", "true"),
+                                 (_local_spec(), "windows-latest", "false"),
+                                 (_local_spec(os="macos", repro=[{"shell": "sh", "script": "echo done"}]),
+                                  "macos-latest", "false")):
+        output = tmp_path / f"{runs_on}.txt"
+        for key, value in _env(_dispatch(spec), GITHUB_OUTPUT=str(output)).items():
+            monkeypatch.setenv(key, value)
+        assert repro_runner.main(["verify"]) == 0
+        values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        assert values["runs_on"] == runs_on and values["azure"] == azure
+
+
+def test_shell_steps_only_verify_without_azure():
+    assert repro_runner.verify_from_env(_env(_dispatch(_local_spec())))["azure"] is False
+    assert not repro_spec.validate_spec(_local_spec(azure=True))["valid"]
+
+
+def test_shell_argv_and_script_files(tmp_path):
+    path = tmp_path / "s"
+    assert repro_runner.shell_argv("pwsh", path, windows=True)[-2:] == ["-File", str(path)]
+    assert repro_runner.shell_argv("bash", path, windows=False)[1:] == ["--noprofile", "--norc", str(path)]
+    cmd = repro_runner.write_script("cmd", "echo a\necho b", tmp_path / "c")
+    assert cmd.suffix == ".cmd" and cmd.read_bytes() == b"@echo off\r\necho a\r\necho b\r\n"
+    bash = repro_runner.write_script("bash", "echo a", tmp_path / "b")
+    assert bash.suffix == ".sh" and bash.read_bytes() == b"echo a\n"
+    assert repro_runner.display_step({"shell": "bash", "script": "a\n  b"}) == "bash: a b"
+
+
+def test_find_msi_cli_locates_python_and_wbin(tmp_path):
+    cli = tmp_path / "Microsoft SDKs" / "Azure" / "CLI2"
+    (cli / "wbin").mkdir(parents=True)
+    (cli / "wbin" / "az.cmd").write_text("")
+    (cli / "python.exe").write_text("")
+    python, wbin = repro_runner.find_msi_cli(tmp_path)
+    assert python == (cli / "python.exe").resolve() and wbin == (cli / "wbin").resolve()
+    assert repro_runner.find_msi_cli(tmp_path / "Microsoft SDKs" / "missing") == (None, None)
+    assert repro_runner.msi_url({"reported_version": "2.77.0"}, "reported").endswith("azure-cli-2.77.0-x64.msi")
+    assert repro_runner.source_ref({"tool": "az"}, {"cli_version": "2.86.0"}) == "azure-cli-2.86.0"
+    assert repro_runner.source_ref({"tool": "az"}, {"source_sha": "a" * 40}) == "a" * 40
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell")
+def test_shell_steps_run_with_the_cli_on_path_and_source_dir(tmp_path):
+    spec = repro_runner.verify_from_env(_env(_dispatch(_local_spec(
+        os="linux",
+        repro=[{"shell": "bash", "script": 'az\necho "src=$REPRO_SOURCE_DIR"\ntest -z "$REPRO_SECRET"\n'}],
+        observed_in_issue={"output_substring": "fake az"},
+    ))))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "az"
+    fake.write_text("#!/bin/sh\necho fake az\n")
+    fake.chmod(0o755)
+    os.environ["REPRO_SECRET"] = "x"
+    try:
+        raw = repro_runner.execute(
+            spec, az_path=[str(fake)], resource_group="rg", run_id="1",
+            raw_dir=tmp_path / "raw", work_dir=tmp_path / "work", log=lambda _m: None,
+            path_dir=bin_dir, source_dir=tmp_path / "src",
+        )
+    finally:
+        del os.environ["REPRO_SECRET"]
+    step = raw["steps"][0]
+    assert step["exit_code"] == 0 and raw["reproduced"] is True
+    out = Path(step["stdout"]).read_text()
+    assert f"src={tmp_path / 'src'}" in out
+    assert step["command"].startswith("bash: az echo")

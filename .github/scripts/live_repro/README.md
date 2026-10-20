@@ -12,7 +12,7 @@ Paths below are relative to the repository root.
 | `.github/workflows/live-repro.yml` | `workflow_dispatch` target of `dispatch_reproduction` (inputs `issue`, `spec`, `spec_hash`, `pr_number`, `pr_head_sha`; run name `Live Repro (<issue> @ <spec_hash>[ PR <n> head <sha>])`). |
 | `.github/workflows/live-repro-powershell.yml` | Same inputs and run name for `pwsh-az` specs (Azure/azure-powershell issues; `LIVE_REPRO_POWERSHELL_WORKFLOW`). PR-head re-runs build the module under test in a credential-free `build-pr` job (see below). |
 | `.github/workflows/live-repro-janitor.yml` | Scheduled backstop that deletes expired `xea-repro-*` resource groups. |
-| `.github/scripts/live_repro/repro_runner.py` | Trusted runner: re-validates the spec against `spec_hash`, installs the CLI version, manages the resource group, runs argv steps without a shell, writes all output to files. |
+| `.github/scripts/live_repro/repro_runner.py` | Trusted runner: re-validates the spec against `spec_hash`, installs the CLI version, manages the resource group, runs argv steps without a shell (and script steps only in the credential free `reproduce-local` job), writes all output to files. |
 | `.github/scripts/live_repro/repro_ps_runner.py` | PowerShell runner: reuses `repro_runner.py`'s verification, step loop and result files; installs `Az.<X>` with `Install-Module -RequiredVersion` (builds it from source for `dev`; imports the verified `build-pr` output for `pr`), signs in with a federated `Connect-AzAccount`. |
 | `.github/scripts/live_repro/repro_ps.ps1` | Trusted pwsh script run with `-File` (never `-Command`): installs modules, signs in, manages the resource group and calls one allowlisted cmdlet by splatting a checked parameter hashtable. |
 | `.github/scripts/live_repro/repro_sanitize.py` | Builds `repro.redacted.json`; the comment above `RESULT_FILE_NAME` documents the result schema the Agent consumes. |
@@ -50,6 +50,20 @@ Paths below are relative to the repository root.
   `build-pr` (below).
 - Matrix: the spec's `versions` (`reported`, `latest`, `dev`), or `dev` +
   `pr` when `pr_number` is set (Before/After).
+- Operating system: the spec's `os` (`linux`, `windows`, `macos`) picks the
+  runner. On Windows `latest` and `reported` extract the official MSI
+  (`msiexec /a`, no registry or uninstall of the preinstalled CLI); other
+  versions use a venv as on Linux.
+- Scripts: specs with `"azure": false` may use `{"shell", "script"}` steps
+  (`bash`, `sh`, `pwsh`, `cmd`; `bash` is Git Bash on Windows). They run in
+  `reproduce-local`, which has only `contents: read`, no `id-token`, no
+  secrets and no sign in, so script text can never reach Azure credentials.
+  The CLI under test is first on `PATH` and `REPRO_SOURCE_DIR` holds the
+  matching source checkout (the release tag, `dev` or the PR head).
+- Windows VMs: Azure specs may create VMs and run guest code with
+  `vm run-command` or VM extensions. Script arguments must be inline text;
+  values that look like a local path or `@file` are rejected so az never
+  reads runner files such as the token cache.
 
 ### PR-head mode (`pr_number`)
 

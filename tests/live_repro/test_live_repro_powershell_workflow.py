@@ -291,7 +291,11 @@ def test_only_redacted_json_is_uploaded_under_the_shared_artifact_names(ps, cli)
         ("report", "repro-redacted", "result/repro.redacted.json"),
     }
     assert uploads(ps) == shared | {("build-pr", "repro-pr-module", "repro/pr-module/")}
-    assert uploads(cli) == shared | {("build-pr", "repro-pr-wheels", "repro/wheels/")}
+    assert uploads(cli) == shared | {
+        ("build-pr", "repro-pr-wheels", "repro/wheels/"),
+        ("reproduce-local", "repro-redacted-${{ matrix.version }}",
+         "repro/out/repro.redacted.json"),
+    }
     for job, step in _steps(ps):
         if step.get("uses", "").startswith("actions/upload-artifact@"):
             assert step["with"]["if-no-files-found"] == "error"

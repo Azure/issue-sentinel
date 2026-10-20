@@ -22,30 +22,42 @@ LIVE_REPRO_POWERSHELL_WORKFLOW = os.environ.get(
 )
 
 REPRO_SCHEMA_VERSION = 1
-REPRO_MAX_STEPS = 10
+REPRO_MAX_STEPS = 30
 # Empty directories created in the step working directory (cwd-dependent bugs).
 REPRO_MAX_WORKDIR_DIRS = 5
 REPRO_MAX_ARGS_PER_STEP = 40
 REPRO_MAX_ARG_CHARS = 256
 REPRO_MAX_QUERY_CHARS = 512
 REPRO_MAX_TEXT_CHARS = 200
-REPRO_MAX_INPUT_FILE_CHARS = 8000
+REPRO_MAX_INPUT_FILE_CHARS = 20000
 REPRO_INPUT_FILE_EXTENSIONS = (
     "txt", "json", "yaml", "yml", "bicep", "bicepparam", "xml", "csv",
 )
 REPRO_MAX_PS_PARAMETERS = 30
 REPRO_MAX_LIST_ITEMS = 10
 REPRO_DEFAULT_TIMEOUT_MINUTES = 20
-REPRO_MAX_TIMEOUT_MINUTES = 30
+REPRO_MAX_TIMEOUT_MINUTES = 120
 REPRO_MAX_CONCURRENT_RUNS = max(
     1, int(os.environ.get("LIVE_REPRO_MAX_CONCURRENT_RUNS", "3"))
 )
-REPRO_MAX_INSTANCE_COUNT = 2
 REPRO_MAX_NAME_PLACEHOLDERS = 9
 
 # Versions the workflow installs, in canonical order.
 REPRO_VERSIONS = ("reported", "latest", "dev")
 REPRO_DEFAULT_VERSIONS = ("latest", "dev")
+
+# GitHub-hosted runner OS for the steps. Windows installs reported/latest with the
+# official MSI (Git Bash, PowerShell and cmd are available); others use pip.
+REPRO_OPERATING_SYSTEMS = ("linux", "windows", "macos")
+REPRO_DEFAULT_OS = "linux"
+# Shell steps run only in specs with "azure": false, in a job that never signs in
+# and has no secrets or OIDC token, so issue-derived scripts can't reach credentials.
+REPRO_SHELLS = {
+    "linux": ("bash", "sh", "pwsh"),
+    "macos": ("bash", "sh", "pwsh"),
+    "windows": ("bash", "pwsh", "cmd"),
+}
+REPRO_MAX_SCRIPT_CHARS = 20000
 
 # The PR-head re-run gates ready-for-review; a run slower than this counts as blocked.
 REPRO_AFTER_TIMEOUT_MINUTES = max(
@@ -63,20 +75,6 @@ REPRO_ALLOWED_LOCATIONS = (
     "southeastasia", "global",
 )
 REPRO_DEFAULT_LOCATION = "westus3"
-
-# Cheap SKUs, sizes and tiers (compared case-insensitively).
-REPRO_ALLOWED_SKUS = frozenset(s.casefold() for s in (
-    "Standard_LRS", "Standard_ZRS", "Standard_GRS", "Premium_LRS",
-    "F1", "FREE", "D1", "SHARED", "B1", "B2", "S1", "P0v3", "P1v3", "Y1",
-    "EP1", "FC1",
-    "Standard_B1s", "Standard_B1ms", "Standard_B2s", "Standard_B1ls",
-    "Standard_DS1_v2", "Standard_D2s_v3", "Standard_D2s_v5",
-    "Free", "Basic", "Standard", "Developer", "Consumption", "Burstable",
-    "Standard_B1", "B_Standard_B1ms", "GP_Gen5_2", "S0", "F0",
-    "Standard_v2", "Basic_v2",
-    "standard", "premium", "C0",
-    "Free_F1", "Standard_S1",
-))
 
 # Changing these allowlists widens what issue-derived commands may run, so get owner approval.
 # A longer entry narrows a group to read-only commands, for example "group show".
@@ -123,8 +121,7 @@ REPRO_AZ_DENIED_COMMANDS = tuple(tuple(c.split()) for c in (
     "container exec", "container attach", "webapp up", "webapp ssh",
     "webapp deploy", "webapp deployment", "webapp create-remote-connection",
     "functionapp deploy", "functionapp deployment", "staticwebapp secrets",
-    "vm run-command", "vm extension", "vm secret",
-    "vm access", "vmss run-command", "vmss extension",
+    "vm secret", "vm access",
     "aks command", "aks install-cli", "aks browse", "aks kollect",
     "aks bastion", "aks check-acr", "aks rotate-certs", "sig share",
     "communication phonenumber", "communication phonenumbers",
@@ -137,7 +134,7 @@ REPRO_AZ_DENIED_COMMAND_TOKENS = frozenset({
     "generate-sas", "credential", "credentials", "list-credentials",
     "get-credentials", "list-secrets", "show-secret", "secrets",
     "list-publishing-profiles", "list-publishing-credentials",
-    "run-command", "exec", "attach", "ssh", "tunnel", "console",
+    "exec", "attach", "ssh", "tunnel", "console",
     "remote-connection", "create-remote-connection", "access-token",
     "get-access-token", "role-assignment", "role-assignments",
     "authorization-rule", "token", "tokens", "api-key", "api-keys",
@@ -149,14 +146,20 @@ REPRO_AZ_REST_HOSTS = ("management.azure.com",)
 # Never allowed, even abbreviated.
 REPRO_AZ_DENIED_ARGUMENTS = frozenset({
     "--subscription", "--tenant", "--template-file", "--template-uri",
-    "--template-spec", "--scripts", "--script", "--custom-data",
-    "--user-data", "--source", "--src", "--src-path", "--command",
-    "--command-id", "--exec-command", "--startup-file", "--assignee",
+    "--template-spec", "--source", "--src", "--src-path", "--command",
+    "--exec-command", "--startup-file", "--assignee",
     "--assignee-object-id", "--role", "--show-values", "--show-secrets",
     "--headers", "--sas-token", "--account-key", "--connection-string",
     "--ssh-key-values", "--ssh-key-value", "--skip-authorization-header",
     "--secrets", "--secret-value", "--attach-acr", "--command-line", "--args",
     "--pip-extra-index-urls", "--pip-proxy",
+})
+# Script text run inside a VM the run created (vm/vmss run-command, extensions,
+# cloud-init). Any text is allowed, but never a local path: az would read the file
+# from the signed-in runner and send it to the VM.
+REPRO_AZ_SCRIPT_ARGUMENTS = frozenset({
+    "--scripts", "--script", "--custom-data", "--user-data", "--settings",
+    "--protected-settings",
 })
 # Value must be the workflow-generated {file}.
 REPRO_AZ_FILE_ARGUMENTS = frozenset({

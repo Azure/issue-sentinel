@@ -163,6 +163,12 @@ def redact_sensitive_text(text):
     return redacted
 
 
+def bounded_error_message(error, limit=300):
+    """Exception text safe for logs and job records: redacted, URL-free and bounded."""
+    text = re.sub(r"https?://\S+", "[url]", redact_sensitive_text(str(error)))
+    return re.sub(r"\s+", " ", text).strip()[:limit]
+
+
 def finding_summary(scan):
     """Build a safe, value free summary suitable for a public comment."""
     findings = scan.get("findings") or []
