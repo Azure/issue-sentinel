@@ -93,7 +93,7 @@ def test_run_steps_only_call_trusted_scripts_and_never_echo(path):
         assert "\n" not in script, step["name"]
         assert "${{" not in script, step["name"]
         assert re.fullmatch(
-            r'python3 ("\$RUNNER_SCRIPTS|sentinel/\.github/scripts/live_repro)'
+            r'python3? ("\$RUNNER_SCRIPTS|sentinel/\.github/scripts/live_repro)'
             r'/repro_(runner|sanitize|janitor)\.py"?( [\w-]+)*'
             r'( --parts parts --out result/repro\.redacted\.json)?',
             script,
@@ -167,17 +167,39 @@ def test_matrix_comes_from_verified_spec(repro):
     prepare = repro["jobs"]["prepare"]
     reproduce = repro["jobs"]["reproduce"]
     assert "id-token" not in prepare["permissions"]
-    assert reproduce["needs"] == ["prepare", "build-pr"]
-    # build-pr is skipped outside PR mode; reproduce still runs.
-    assert reproduce["if"] == "always() && needs.prepare.result == 'success'"
-    strategy = reproduce["strategy"]
-    assert strategy["fail-fast"] is False
-    assert strategy["matrix"] == {
-        "version": "${{ fromJSON(needs.prepare.outputs.versions) }}",
-    }
-    assert prepare["outputs"]["versions"] == "${{ steps.verify.outputs.versions }}"
+    local = repro["jobs"]["reproduce-local"]
+    # build-pr is skipped outside PR mode; reproduce still runs. Exactly one
+    # of the two reproduce jobs runs, chosen by the verified spec.
+    for job, azure in ((reproduce, "true"), (local, "false")):
+        assert job["needs"] == ["prepare", "build-pr"]
+        assert job["if"] == (
+            "always() && needs.prepare.result == 'success' && "
+            f"needs.prepare.outputs.azure == '{azure}'"
+        )
+        assert job["runs-on"] == "${{ needs.prepare.outputs.runs_on }}"
+        assert job["defaults"] == {"run": {"shell": "bash"}}
+        strategy = job["strategy"]
+        assert strategy["fail-fast"] is False
+        assert strategy["matrix"] == {
+            "version": "${{ fromJSON(needs.prepare.outputs.versions) }}",
+        }
+        assert job["timeout-minutes"] <= 240
+    for name in ("versions", "runs_on", "azure"):
+        assert prepare["outputs"][name] == f"${{{{ steps.verify.outputs.{name} }}}}"
     assert "verify" in _step(repro, "prepare", "Re-validate")["run"]
-    assert reproduce["timeout-minutes"] <= 120
+
+
+def test_local_job_never_reaches_azure_credentials(repro):
+    local = repro["jobs"]["reproduce-local"]
+    assert local["permissions"] == {"contents": "read"}
+    text = str(local)
+    for forbidden in ("secrets.", "azure/login", "id-token", "rg-create", "logout"):
+        assert forbidden not in text
+    names = [s["name"] for s in local["steps"]]
+    order = ["Install CLI", "Checkout the matching source", "Run ReproSpec",
+             "Sanitize", "Upload redacted result"]
+    positions = [next(i for i, n in enumerate(names) if n.startswith(p)) for p in order]
+    assert positions == sorted(positions)
 
 
 def test_runner_checkout_is_pinned_to_workflow_commit(repro):
@@ -232,6 +254,7 @@ def test_only_redacted_json_is_uploaded(repro):
     assert {(job, s["with"]["name"]) for job, s in uploads} == {
         ("build-pr", "repro-pr-wheels"),
         ("reproduce", "repro-redacted-${{ matrix.version }}"),
+        ("reproduce-local", "repro-redacted-${{ matrix.version }}"),
         ("report", "repro-redacted"),
     }
     # The credential-less build job only uploads the PR head wheels.
@@ -249,7 +272,7 @@ def test_only_redacted_json_is_uploaded(repro):
 
 def test_report_job_runs_after_all_versions(repro):
     report = repro["jobs"]["report"]
-    assert report["needs"] == ["prepare", "reproduce"]
+    assert report["needs"] == ["prepare", "reproduce", "reproduce-local"]
     assert report["if"] == "always() && needs.prepare.result == 'success'"
     assert "merge" in _step(repro, "report", "Merge")["run"]
 

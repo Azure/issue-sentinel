@@ -36,6 +36,14 @@ WORK_DIR = WORKSPACE / "work"
 OUT_DIR = WORKSPACE / "out"
 INSTALL_FILE = RAW_DIR / "install.json"
 RAW_RESULT_FILE = RAW_DIR / "repro.raw.json"
+MSI_DIR = WORKSPACE / "msi"
+SCRIPT_DIR = RAW_DIR / "scripts"
+WINDOWS = os.name == "nt"
+RUNNER_LABELS = {"linux": "ubuntu-latest", "windows": "windows-latest",
+                 "macos": "macos-latest"}
+MSI_LATEST_URL = "https://aka.ms/installazurecliwindowsx64"
+MSI_VERSION_URL = "https://azcliprod.blob.core.windows.net/msi/azure-cli-{version}-x64.msi"
+GIT_BASH = Path(r"C:\Program Files\Git\bin\bash.exe")
 INPUT_FILE_NAME = "repro-input.txt"
 INPUT_FILE_TEXT = "x-engineering-agent live reproduction input\n"
 CLI_REPOSITORY = "Azure/azure-cli"
@@ -57,6 +65,14 @@ GITHUB_API = "https://api.github.com"
 _RUN_KEY = re.compile(r"[^A-Za-z0-9-]")
 # Child processes inherit only these; GitHub and OIDC request tokens are dropped.
 _CHILD_ENV_KEYS = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "USER")
+# Windows processes (Python, msiexec, Git Bash, pwsh) fail without these.
+_WINDOWS_ENV_KEYS = (
+    "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP",
+    "USERPROFILE", "USERNAME", "APPDATA", "LOCALAPPDATA", "PROGRAMFILES",
+    "PROGRAMFILES(X86)", "PROGRAMW6432", "PROGRAMDATA", "COMMONPROGRAMFILES",
+    "HOMEDRIVE", "HOMEPATH", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+    "OS",
+)
 _CHILD_ENV_FIXED = {
     "AZURE_CORE_COLLECT_TELEMETRY": "false",
     "AZURE_CORE_NO_COLOR": "true",
@@ -120,8 +136,11 @@ def verify_spec(spec_text, spec_hash, issue, pr_number="", pr_head_sha=""):
     )
     if normalized["tool"] == "pwsh-az":
         errors.append("tool: pwsh-az specs run in live-repro-powershell.yml")
+    local = normalized.get("azure") is False
     for phase in ("setup", "repro"):
         for index, step in enumerate(normalized[phase]):
+            if local and "shell" in step:
+                continue
             argv = step.get("argv")
             if not isinstance(argv, list) or not argv or argv[0] != "az":
                 errors.append(f"{phase}[{index}]: only az argv steps run here")
@@ -231,6 +250,14 @@ def resource_group_for(spec, env=None):
     )
 
 
+def display_step(step):
+    """Report text for a step: argv, or the shell and the start of its script."""
+    if "shell" in step:
+        script = " ".join(step["script"].split())
+        return f"{step['shell']}: {script[:400]}"
+    return display_command(step["argv"])
+
+
 def display_command(argv):
     """Unresolved argv for reports, with placeholders shown as <rg> etc."""
     shown = [re.sub(r"\{([a-z0-9]+)\}", r"<\1>", token) for token in argv]
@@ -242,7 +269,8 @@ def display_command(argv):
 
 def child_env(extra=None, env=None):
     env = os.environ if env is None else env
-    result = {k: env[k] for k in _CHILD_ENV_KEYS if env.get(k)}
+    keys = _CHILD_ENV_KEYS + (_WINDOWS_ENV_KEYS if WINDOWS else ())
+    result = {k: env[k] for k in keys if env.get(k)}
     result.update(_CHILD_ENV_FIXED)
     result.update(extra or {})
     return result
@@ -309,8 +337,34 @@ def system_az():
     return shutil.which("az") or "az"
 
 
+def venv_bin():
+    return VENV_DIR / ("Scripts" if WINDOWS else "bin")
+
+
+def venv_python():
+    return venv_bin() / ("python.exe" if WINDOWS else "python")
+
+
 def venv_az():
-    return (VENV_DIR / "bin" / "az").resolve()
+    return (venv_bin() / "az").resolve()
+
+
+def az_command(install=None):
+    """argv prefix that runs the installed CLI, or None when it is missing."""
+    install = install if install is not None else (_read_json(INSTALL_FILE) or {})
+    python = install.get("python")
+    if python:
+        return [python, "-I", "-m", "azure.cli"] if Path(python).exists() else None
+    if WINDOWS:
+        python = venv_python().resolve()
+        return [str(python), "-m", "azure.cli"] if python.exists() else None
+    return [str(venv_az())] if venv_az().exists() else None
+
+
+def bin_dir(install=None):
+    """Directory to put first on PATH so scripts run the CLI under test."""
+    install = install if install is not None else (_read_json(INSTALL_FILE) or {})
+    return install.get("bin_dir") or str(venv_bin().resolve())
 
 
 def cmd_verify(args):
@@ -340,6 +394,8 @@ def cmd_verify(args):
             return 1
     write_outputs({
         "versions": json.dumps(versions),
+        "runs_on": RUNNER_LABELS[spec.get("os", "linux")],
+        "azure": "false" if spec.get("azure") is False else "true",
         "timeout_minutes": spec["timeout_minutes"],
         "step_timeout_minutes": spec["timeout_minutes"] + 5,
         "source_repo": repository,
@@ -350,13 +406,15 @@ def cmd_verify(args):
     steps = len(spec["setup"]) + len(spec["repro"])
     print(
         f"ReproSpec {os.environ['REPRO_SPEC_HASH'][:12]} verified: "
-        f"tool {spec['tool']}, {steps} step(s), versions {', '.join(versions)}."
+        f"tool {spec['tool']}, {steps} step(s), versions {', '.join(versions)}, "
+        f"os {spec.get('os', 'linux')}"
+        f"{'' if spec.get('azure') is not False else ', no Azure sign in'}."
     )
     return 0
 
 
 def _install_commands(spec, version, wheels=None):
-    python = str(VENV_DIR / "bin" / "python")
+    python = str(venv_python())
     pip = [python, "-m", "pip", "install", "--disable-pip-version-check",
            "--no-input"]
     extension = extension_name(spec)
@@ -385,15 +443,15 @@ def _install_commands(spec, version, wheels=None):
             str(source / "azure-cli-core"), str(source / "azure-cli"),
         ]))
     if extension:
-        az = str(VENV_DIR / "bin" / "az")
+        az = [python, "-m", "azure.cli"]
         if version == "reported":
             commands.append(("extension", [
-                az, "extension", "add", "--name", extension, "--version",
+                *az, "extension", "add", "--name", extension, "--version",
                 spec["reported_version"], "--yes",
             ]))
         elif version == "latest":
             commands.append(("extension", [
-                az, "extension", "add", "--name", extension, "--yes",
+                *az, "extension", "add", "--name", extension, "--yes",
             ]))
         else:
             commands.append(("extension", [
@@ -497,6 +555,53 @@ def cmd_build(args):
     return 0
 
 
+def msi_url(spec, version):
+    if version == "latest":
+        return MSI_LATEST_URL
+    return MSI_VERSION_URL.format(version=spec["reported_version"])
+
+
+def find_msi_cli(root):
+    """(python, wbin) inside an extracted MSI, or (None, None)."""
+    for az_cmd in sorted(Path(root).rglob("az.cmd")):
+        if az_cmd.parent.name.lower() == "wbin":
+            python = az_cmd.parent.parent / "python.exe"
+            if python.is_file():
+                return python.resolve(), az_cmd.parent.resolve()
+    return None, None
+
+
+def _install_msi(spec, version):
+    """Extract the official Windows MSI (administrative install, no registry).
+
+    Returns install info or an error string. The preinstalled az stays untouched.
+    """
+    if MSI_DIR.exists():
+        shutil.rmtree(MSI_DIR)
+    target = (MSI_DIR / "cli").resolve()
+    target.mkdir(parents=True)
+    package = MSI_DIR / "azure-cli.msi"
+    try:
+        with urllib.request.urlopen(msi_url(spec, version), timeout=600) as response, \
+                open(package, "wb") as handle:
+            shutil.copyfileobj(response, handle)
+    except (OSError, urllib.error.URLError):
+        return "downloading the MSI failed"
+    print("install msi-download: done")
+    result = run_quiet(
+        ["msiexec", "/a", str(package.resolve()), "/qn", f"TARGETDIR={target}",
+         "/L*v", str((RAW_DIR / "install" / "msiexec.log").resolve())],
+        RAW_DIR / "install" / "msi", timeout=INSTALL_TIMEOUT_SECONDS,
+    )
+    print(f"install msi: exit {result['exit_code']} ({result['duration_seconds']}s)")
+    if result["exit_code"] != 0:
+        return "install step `msi` failed"
+    python, wbin = find_msi_cli(target)
+    if not python:
+        return "the MSI layout has no CLI2 python.exe and wbin"
+    return {"python": str(python), "bin_dir": str(wbin)}
+
+
 def cmd_install(args):
     """Install the matrix version of the CLI (and extension) into a venv."""
     spec = verify_from_env()
@@ -527,7 +632,15 @@ def cmd_install(args):
         return 1
     EXTENSION_DIR.mkdir(parents=True, exist_ok=True)
     extra = {"AZURE_EXTENSION_DIR": str(EXTENSION_DIR.resolve())}
-    for name, argv in _install_commands(spec, version, wheels):
+    msi = None
+    if WINDOWS and version in ("latest", "reported") and not extension:
+        msi = _install_msi(spec, version)
+        if isinstance(msi, str):
+            _write_json(INSTALL_FILE, {"version": version, "error": msi})
+            print(f"::error::Installing the {version} CLI failed.")
+            return 1
+    commands = [] if msi else _install_commands(spec, version, wheels)
+    for name, argv in commands:
         result = run_quiet(
             argv, RAW_DIR / "install" / name, timeout=INSTALL_TIMEOUT_SECONDS,
             extra_env=extra,
@@ -540,7 +653,7 @@ def cmd_install(args):
             print(f"::error::Installing the {version} CLI failed.")
             return 1
     info = {"version": version, "error": None, "cli_version": None,
-            "extension_version": None, "source_sha": None}
+            "extension_version": None, "source_sha": None, **(msi or {})}
     if version == "pr":
         # No PR code runs before the sandboxed `run` step.
         by_name = {w["distribution"]: w["version"] for w in wheels}
@@ -549,9 +662,10 @@ def cmd_install(args):
             info["extension_version"] = wheels[0]["version"]
         info["source_sha"] = os.environ.get("REPRO_PR_HEAD_SHA", "").strip()
         _write_json(INSTALL_FILE, info)
+        write_outputs({"source_ref": info["source_sha"]})
         print("Installed the PR head wheels.")
         return 0
-    result = run_quiet([venv_az(), "version", "-o", "json"],
+    result = run_quiet([*az_command(info), "version", "-o", "json"],
                        RAW_DIR / "install" / "az-version", timeout=300,
                        extra_env=extra)
     data = _read_json(result["stdout"]) or {}
@@ -561,8 +675,18 @@ def cmd_install(args):
     if version == "dev":
         info["source_sha"] = _source_sha(RAW_DIR / "install" / "git-sha")
     _write_json(INSTALL_FILE, info)
+    write_outputs({"source_ref": source_ref(spec, info)})
     print(f"Installed azure-cli {info['cli_version'] or 'unknown'} for `{version}`.")
     return 0
+
+
+def source_ref(spec, info):
+    """Git ref of the source that matches the installed CLI (for REPRO_SOURCE_DIR)."""
+    if info.get("source_sha"):
+        return info["source_sha"]
+    if not extension_name(spec) and info.get("cli_version"):
+        return f"azure-cli-{info['cli_version']}"
+    return DEV_REFS[source_repository(spec)]
 
 
 def expires_at(now=None, hours=None):
@@ -690,27 +814,75 @@ def prepare_run(spec, *, resource_group, run_id, subscription_id=None,
     return values, resolved
 
 
+_SCRIPT_SUFFIX = {"bash": ".sh", "sh": ".sh", "pwsh": ".ps1", "cmd": ".cmd"}
+
+
+def shell_argv(shell, path, windows=WINDOWS):
+    """argv that runs a script file in shell (Git Bash for bash on Windows)."""
+    path = str(path)
+    if shell == "bash":
+        bash = str(GIT_BASH) if windows and GIT_BASH.exists() else (
+            shutil.which("bash") or "bash")
+        return [bash, "--noprofile", "--norc", path]
+    if shell == "sh":
+        return [shutil.which("sh") or "sh", path]
+    if shell == "pwsh":
+        return [shutil.which("pwsh") or "pwsh", "-NoLogo", "-NoProfile",
+                "-NonInteractive", "-File", path]
+    return [os.environ.get("COMSPEC") or "cmd.exe", "/d", "/c", path]
+
+
+def write_script(shell, script, path):
+    path = Path(path).with_suffix(_SCRIPT_SUFFIX[shell])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = script if script.endswith("\n") else script + "\n"
+    if shell == "cmd":
+        text = "@echo off\r\n" + text.replace("\n", "\r\n")
+    path.write_bytes(text.encode("utf-8"))
+    return path
+
+
 def execute(spec, *, az_path, resource_group, run_id, subscription_id=None,
             deadline_seconds=None, raw_dir=RAW_DIR, work_dir=WORK_DIR,
-            log=print):
-    """Run the setup and repro steps and return the raw, unredacted result."""
+            log=print, path_dir=None, source_dir=None):
+    """Run the setup and repro steps and return the raw, unredacted result.
+
+    az_path is the argv prefix (or a single path) that runs the CLI under test.
+    """
     raw_dir, work_dir = Path(raw_dir), Path(work_dir)
+    az = [az_path] if isinstance(az_path, str) else list(az_path)
     values, resolved = prepare_run(
         spec, resource_group=resource_group, run_id=run_id,
         subscription_id=subscription_id, work_dir=work_dir,
     )
+    extra = {"AZURE_EXTENSION_DIR": str(EXTENSION_DIR.resolve())}
+    if path_dir:
+        extra["PATH"] = os.pathsep.join(
+            p for p in (str(path_dir), os.environ.get("PATH", "")) if p)
+    if source_dir:
+        extra["REPRO_SOURCE_DIR"] = str(source_dir)
 
     def launch(phase, index, step, remaining):
+        stem = raw_dir / "steps" / f"{phase}-{index}"
+        if "shell" in step:
+            script = write_script(
+                step["shell"], step["script"],
+                raw_dir / "scripts" / f"{phase}-{index}",
+            )
+            env = dict(extra)
+            if WINDOWS and step["shell"] == "bash" and source_dir:
+                env["REPRO_SOURCE_DIR"] = Path(source_dir).as_posix()
+            return run_quiet(
+                shell_argv(step["shell"], script.resolve()), stem,
+                timeout=remaining, cwd=work_dir, extra_env=env,
+            )
         return run_quiet(
-            [az_path, *step["argv"][1:]],
-            raw_dir / "steps" / f"{phase}-{index}", timeout=remaining,
-            cwd=work_dir,
-            extra_env={"AZURE_EXTENSION_DIR": str(EXTENSION_DIR.resolve())},
+            [*az, *step["argv"][1:]], stem, timeout=remaining, cwd=work_dir,
+            extra_env=extra,
         )
 
     return run_steps(
-        spec, resolved, values, launch=launch,
-        display=lambda step: display_command(step["argv"]),
+        spec, resolved, values, launch=launch, display=display_step,
         deadline_seconds=deadline_seconds, log=log,
     )
 
@@ -792,15 +964,18 @@ def cmd_run(args):
     """Run the verified spec against the installed CLI version."""
     spec = verify_from_env()
     install = _read_json(INSTALL_FILE) or {}
-    if install.get("error") or not venv_az().exists():
+    az = az_command(install)
+    if install.get("error") or not az:
         _write_json(RAW_RESULT_FILE, {"status": "error", "reproduced": None,
                                       "steps": [], "error": "CLI not installed",
                                       "redact_values": {}}, private=True)
         print("::error::The CLI version was not installed.")
         return 1
     group = resource_group_for(spec)
+    source = SOURCE_DIR.resolve() if SOURCE_DIR.is_dir() else None
     raw = execute(
-        spec, az_path=str(venv_az()), resource_group=group,
+        spec, az_path=az, resource_group=group,
+        path_dir=bin_dir(install), source_dir=source,
         run_id=run_key(os.environ.get("GITHUB_RUN_ID", "local"),
                        os.environ.get("REPRO_VERSION", "latest")),
         subscription_id=os.environ.get("REPRO_SUBSCRIPTION_ID") or None,
@@ -812,7 +987,19 @@ def cmd_run(args):
     return 0
 
 
+def cmd_host_setup(args):
+    """Windows only: let git check out the CLI's long test recording paths."""
+    if WINDOWS:
+        result = run_quiet(["git", "config", "--global", "core.longpaths", "true"],
+                           RAW_DIR / "host" / "longpaths", timeout=60)
+        print(f"git core.longpaths: exit {result['exit_code']}.")
+        return 0 if result["exit_code"] == 0 else 1
+    print("Nothing to set up on this runner.")
+    return 0
+
+
 COMMANDS = {
+    "host-setup": cmd_host_setup,
     "verify": cmd_verify,
     "build": cmd_build,
     "install": cmd_install,

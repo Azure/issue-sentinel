@@ -38,6 +38,8 @@ REPRO_SPEC_SCHEMA = {
             "items": {"enum": list(settings.REPRO_VERSIONS)},
         },
         "reported_version": {"type": "string"},
+        "os": {"enum": list(settings.REPRO_OPERATING_SYSTEMS)},
+        "azure": {"type": "boolean"},
         "module": {"type": "string", "pattern": r"^Az\.[A-Za-z]{2,40}$"},
         "location": {"enum": list(settings.REPRO_ALLOWED_LOCATIONS)},
         "workdir_dirs": {
@@ -83,9 +85,18 @@ REPRO_SPEC_SCHEMA = {
             "oneOf": [
                 {"required": ["argv"]},
                 {"required": ["cmdlet", "parameters"]},
+                {"required": ["shell", "script"]},
             ],
             "properties": {
                 "argv": {"type": "array", "items": {"type": "string"}},
+                "shell": {"enum": sorted({
+                    shell for shells in settings.REPRO_SHELLS.values()
+                    for shell in shells
+                })},
+                "script": {
+                    "type": "string", "minLength": 1,
+                    "maxLength": settings.REPRO_MAX_SCRIPT_CHARS,
+                },
                 "cmdlet": {"type": "string"},
                 "parameters": {"type": "object"},
                 "expect": {
@@ -165,7 +176,7 @@ _TOP_KEYS = frozenset({
     "schema_version", "issue", "tool", "versions", "reported_version",
     "module",
     "location", "setup", "repro", "observed_in_issue", "timeout_minutes",
-    "workdir_dirs", "input_file",
+    "workdir_dirs", "input_file", "os", "azure",
 })
 _INPUT_FILE_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\u2028\u2029]")
 _OBSERVED_KEYS = frozenset({"exit_code", "error_substring", "output_substring"})
@@ -178,7 +189,7 @@ _REST_FLAGS = frozenset({
 _QUERY_FLAGS = frozenset({"--query", "--analytics-query"})
 _OUTPUT_FLAGS = frozenset({"-o", "--output"})
 _NAME_FLAGS = frozenset({"-n", "--name"})
-_MAX_SPEC_JSON_CHARS = 20_000
+_MAX_SPEC_JSON_CHARS = 50_000
 
 
 class ReproSpecError(ValueError):
@@ -352,10 +363,8 @@ def _check_exact(value, expected, loc, errors, what):
 
 
 def _check_sku(value, loc, errors):
-    if not isinstance(value, str) or (
-        value.casefold() not in settings.REPRO_ALLOWED_SKUS
-    ):
-        errors.append(f"{loc}: SKU/size `{value}` is not in the cheap-SKU allowlist")
+    if not isinstance(value, str) or not value.strip():
+        errors.append(f"{loc}: SKU/size must be a non-empty string")
 
 
 def _check_count(value, loc, errors):
@@ -364,10 +373,8 @@ def _check_count(value, loc, errors):
     except (TypeError, ValueError):
         errors.append(f"{loc}: count must be an integer")
         return
-    if not 0 <= count <= settings.REPRO_MAX_INSTANCE_COUNT:
-        errors.append(
-            f"{loc}: count must be at most {settings.REPRO_MAX_INSTANCE_COUNT}"
-        )
+    if count < 0:
+        errors.append(f"{loc}: count must not be negative")
 
 
 def _check_name(value, loc, errors):
@@ -400,7 +407,42 @@ def _special_flag_names():
         settings.REPRO_AZ_DENIED_ARGUMENTS
         | settings.REPRO_AZ_FILE_ARGUMENTS
         | settings.REPRO_AZ_PASSWORD_ARGUMENTS
+        | settings.REPRO_AZ_SCRIPT_ARGUMENTS
     )
+
+
+_SCRIPT_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_PATH_LIKE = re.compile(r"^\s*(?:[/~\\.@]|[A-Za-z]:)")
+
+
+def _check_script(value, loc, errors, *, local_path_ok=False):
+    """Script text: any content, but never a secret, placeholder secret or local file path.
+
+    az reads a single-line value that names an existing file, so on a signed-in
+    runner a path could carry the token cache to the VM.
+    """
+    if not isinstance(value, str) or not value.strip():
+        errors.append(f"{loc}: must be a non-empty string")
+        return
+    if len(value) > settings.REPRO_MAX_SCRIPT_CHARS:
+        errors.append(
+            f"{loc}: longer than {settings.REPRO_MAX_SCRIPT_CHARS} characters"
+        )
+        return
+    if _SCRIPT_CONTROL.search(value):
+        errors.append(f"{loc}: control characters other than newline and tab "
+                      "are not allowed")
+    if "{password}" in value or "{file}" in value:
+        errors.append(f"{loc}: {{password}} and {{file}} are not allowed")
+    single_line = "\n" not in value.strip()
+    if not local_path_ok and single_line and (
+        _PATH_LIKE.match(value) or ".." in value or ".azure" in value.lower()
+    ):
+        errors.append(
+            f"{loc}: a single-line script must be script text, not a local "
+            "file path (az would read and send the file)"
+        )
+    _check_sensitive(value, loc, errors)
 
 
 def _parse_flags(tokens, loc, errors):
@@ -561,6 +603,11 @@ def _validate_flag(flag, values, floc, errors, path=()):
         _check_exact(values, ["{file}"], floc, errors, "the value")
     elif flag in settings.REPRO_AZ_PASSWORD_ARGUMENTS:
         _check_exact(values, ["{password}"], floc, errors, "the value")
+    elif flag in settings.REPRO_AZ_SCRIPT_ARGUMENTS:
+        if not values:
+            errors.append(f"{floc}: needs a value")
+        for value in values:
+            _check_script(value, floc, errors)
     elif (flag in settings.REPRO_AZ_RESOURCE_GROUP_ARGUMENTS
           or flag.endswith("-resource-group")):
         _check_exact(values, ["{rg}"], floc, errors, "the resource group")
@@ -834,7 +881,24 @@ def _validate_expect(value, loc, errors, allowed_keys):
     return result
 
 
-def _validate_steps(steps, name, ps, errors):
+def _validate_shell_step(step, loc, errors, shells):
+    shell, script = step.get("shell"), step.get("script")
+    if not shells:
+        errors.append(
+            f"{loc}: shell steps need \"azure\": false (they run in a job "
+            "that never signs in to Azure)"
+        )
+        return None
+    if shell not in shells:
+        errors.append(f"{loc}.shell: must be one of {list(shells)} on this os")
+        return None
+    _check_script(script, f"{loc}.script", errors, local_path_ok=True)
+    if not isinstance(script, str):
+        return None
+    return {"shell": shell, "script": script.replace("\r\n", "\n")}
+
+
+def _validate_steps(steps, name, ps, errors, shells=()):
     if steps is None and name == "setup":
         return []
     if not isinstance(steps, list):
@@ -846,7 +910,13 @@ def _validate_steps(steps, name, ps, errors):
         if not isinstance(step, dict):
             errors.append(f"{loc}: must be an object")
             continue
-        allowed = {"cmdlet", "parameters", "expect"} if ps else {"argv", "expect"}
+        shell_step = not ps and ("shell" in step or "script" in step)
+        if ps:
+            allowed = {"cmdlet", "parameters", "expect"}
+        elif shell_step:
+            allowed = {"shell", "script", "expect"}
+        else:
+            allowed = {"argv", "expect"}
         unknown = sorted(set(step) - allowed)
         if unknown:
             errors.append(
@@ -854,9 +924,12 @@ def _validate_steps(steps, name, ps, errors):
                 f"(steps for this tool use {', '.join(sorted(allowed))})"
             )
             continue
-        result = (_validate_ps_step if ps else _validate_az_step)(
-            step, loc, errors,
-        )
+        if shell_step:
+            result = _validate_shell_step(step, loc, errors, shells)
+        else:
+            result = (_validate_ps_step if ps else _validate_az_step)(
+                step, loc, errors,
+            )
         if result is None:
             continue
         if "expect" in step:
@@ -1035,8 +1108,21 @@ def validate_spec(spec):
         input_file = _validate_input_file(spec["input_file"], errors)
 
     ps = tool == "pwsh-az"
-    setup = _validate_steps(spec.get("setup"), "setup", ps, errors)
-    repro = _validate_steps(spec.get("repro"), "repro", ps, errors)
+    os_name = spec.get("os", settings.REPRO_DEFAULT_OS)
+    if os_name not in settings.REPRO_OPERATING_SYSTEMS:
+        errors.append(
+            f"os: must be one of {list(settings.REPRO_OPERATING_SYSTEMS)}"
+        )
+        os_name = settings.REPRO_DEFAULT_OS
+    azure = spec.get("azure", True)
+    if not isinstance(azure, bool):
+        errors.append("azure: must be true or false")
+        azure = True
+    if ps and (os_name != settings.REPRO_DEFAULT_OS or not azure):
+        errors.append("os and azure: only supported for az specs")
+    shells = () if azure or ps else settings.REPRO_SHELLS[os_name]
+    setup = _validate_steps(spec.get("setup"), "setup", ps, errors, shells)
+    repro = _validate_steps(spec.get("repro"), "repro", ps, errors, shells)
     if not isinstance(spec.get("repro"), list) or not spec.get("repro"):
         errors.append("repro: at least one step is required")
     total = sum(
@@ -1103,6 +1189,10 @@ def validate_spec(spec):
         normalized["workdir_dirs"] = sorted(workdir_dirs)
     if input_file is not None:
         normalized["input_file"] = input_file
+    if os_name != settings.REPRO_DEFAULT_OS:
+        normalized["os"] = os_name
+    if not azure:
+        normalized["azure"] = False
     return {
         "valid": True, "errors": [], "spec": normalized,
         "spec_hash": _hash_canonical(canonical_spec_json(normalized)),
