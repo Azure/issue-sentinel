@@ -48,6 +48,11 @@ on:
         required: false
         type: boolean
         default: true
+      related_tests:
+        description: "Space separated existing live test methods of commands that reach shared code the PR changes (azure-cli only). Run after the PR's own tests; their recordings are never committed and they do not change the conclusion."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   id-token: write       # required for federated OIDC login to BAMI
@@ -195,10 +200,20 @@ jobs:
         env:
           PR_REPO_NAME: ${{ steps.pr.outputs.repo }}
           BASE_REF: ${{ steps.pr.outputs.base_ref }}
+          RELATED_TESTS: ${{ inputs.related_tests }}
         run: |
           set -euo pipefail
           cd "$PR_REPO_NAME"
           git fetch origin "${BASE_REF}" --depth=200 || true
+
+          # Related command tests are plain test method names; anything else is dropped.
+          related=""
+          if [ "$PR_REPO_NAME" = "azure-cli" ]; then
+            related=$(printf '%s\n' $RELATED_TESTS \
+              | grep -E '^test_[A-Za-z0-9_]{1,150}$' \
+              | awk '!seen[$0]++' | head -n 8 | paste -sd ' ' - || true)
+          fi
+          echo "related=${related}" >> "$GITHUB_OUTPUT"
 
           # Only command-module and extension tests are valid azdev live-test
           # targets. Core-package and other nested tests use different runners.
@@ -282,8 +297,9 @@ jobs:
 
       - name: Install azdev and Azure CLI from source
         if: >-
-          steps.detect.outputs.has_tests == 'true'
-          && steps.detect.outputs.selection_error != 'true'
+          (steps.detect.outputs.has_tests == 'true'
+           && steps.detect.outputs.selection_error != 'true')
+          || steps.detect.outputs.related != ''
         env:
           KIND: ${{ steps.detect.outputs.kind }}
           EXTENSIONS: ${{ steps.detect.outputs.extensions }}
@@ -475,6 +491,27 @@ jobs:
             echo "::warning::Failed to push recordings to ${HEAD_REF} (branch may have moved or be protected)."
           fi
 
+      - name: Run related command live tests
+        id: related
+        # After the recordings commit, so related recordings never reach the PR branch.
+        if: always() && steps.detect.outputs.related != ''
+        env:
+          RELATED: ${{ steps.detect.outputs.related }}
+        run: |
+          source .venv/bin/activate
+          set -o pipefail
+          mkdir -p test-output/related
+          set +e
+          # shellcheck disable=SC2086
+          azdev test $RELATED --live --series --discover \
+            --xml-path test-output/related/results.xml \
+            2>&1 | tee test-output/related/log.txt
+          rc=$?
+          set -e
+          echo "exit_code=${rc}" >> "$GITHUB_OUTPUT"
+          echo "Related command live tests finished (exit ${rc}); they do not change the conclusion."
+          exit 0
+
       - name: Build PR comment body
         if: always()
         id: body
@@ -641,7 +678,9 @@ jobs:
           PY
 
       - name: Upload test artifacts
-        if: always() && steps.detect.outputs.has_tests == 'true'
+        if: >-
+          always()
+          && (steps.detect.outputs.has_tests == 'true' || steps.detect.outputs.related != '')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: live-test-pr-${{ inputs.pr_number }}
