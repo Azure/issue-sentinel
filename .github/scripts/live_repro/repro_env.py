@@ -220,22 +220,79 @@ def container_down(state, *, run, log_dir):
     return run(["docker", "rm", "-f", state["name"]], Path(log_dir) / "rm", timeout=300)
 
 
+# Fallbacks when the preferred size or region has no free vCPU quota. Each size
+# is Gen2 and Trusted Launch capable; the family is its `az vm list-usage` name.
+VM_SIZE_FAMILIES = (
+    (policy.REPRO_VM_SIZE, None),
+    ("Standard_D2s_v5", "standardDSv5Family"),
+    ("Standard_D2as_v5", "standardDASv5Family"),
+    ("Standard_D2s_v4", "standardDSv4Family"),
+    ("Standard_D2s_v3", "standardDSv3Family"),
+    ("Standard_D2ds_v5", "standardDDSv5Family"),
+    ("Standard_B2ms", "standardBSFamily"),
+)
+VM_LOCATIONS = ("westus3", "eastus2", "westus2", "centralus", "eastus", "northeurope")
+VM_CORES = 2
+
+
+def _free_cores(usage, name):
+    for item in usage:
+        if (item.get("name") or {}).get("value") == name:
+            try:
+                return int(item.get("limit", 0)) - int(item.get("currentValue", 0))
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def vm_placement(spec, *, run, az, log_dir):
+    """(location, size) pairs with free vCPU quota, the spec's region first."""
+    family = {size: fam for size, fam in VM_SIZE_FAMILIES if fam}
+    sizes = list(dict.fromkeys(size for size, _ in VM_SIZE_FAMILIES))
+    first = spec.get("location") or VM_LOCATIONS[0]
+    found = []
+    for location in dict.fromkeys((first, *VM_LOCATIONS)):
+        result = run([az, "vm", "list-usage", "--location", location, "-o", "json"],
+                     Path(log_dir) / f"usage-{location}", timeout=120)
+        try:
+            usage = json.loads(Path(result["stdout"]).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if result["exit_code"] != 0 or not isinstance(usage, list):
+            continue
+        if _free_cores(usage, "cores") < VM_CORES:
+            continue
+        for size in sizes:
+            if family.get(size) and _free_cores(usage, family[size]) >= VM_CORES:
+                found.append((location, size))
+    return found
+
+
 def vm_up(spec, *, run, az, group, log_dir, password):
     """Create the VM: no public IP, no NSG, no identity. Returns state or an error string."""
-    result = run([
-        az, "vm", "create", "--resource-group", group, "--name", VM_NAME,
-        "--computer-name", VM_NAME, "--image", entry(spec)["image"],
-        "--size", policy.REPRO_VM_SIZE, "--location", spec["location"],
-        "--admin-username", VM_ADMIN, "--admin-password", password,
-        "--public-ip-address", "", "--nsg", "", "--only-show-errors", "-o", "none",
-    ], Path(log_dir) / "vm-create", timeout=40 * 60)
-    if result["exit_code"] != 0:
+    placements = vm_placement(spec, run=run, az=az, log_dir=log_dir)
+    if not placements:
+        return "creating the environment VM failed (no region has free vCPU quota)"
+    codes = []
+    for attempt, (location, size) in enumerate(placements[:4]):
+        result = run([
+            az, "vm", "create", "--resource-group", group, "--name", VM_NAME,
+            "--computer-name", VM_NAME, "--image", entry(spec)["image"],
+            "--size", size, "--location", location,
+            "--admin-username", VM_ADMIN, "--admin-password", password,
+            "--public-ip-address", "", "--nsg", "", "--only-show-errors", "-o", "none",
+        ], Path(log_dir) / f"vm-create-{attempt}", timeout=40 * 60)
+        if result["exit_code"] == 0:
+            print(f"Windows VM is {size} in {location}.")
+            return {"kind": "vm", "group": group, "name": VM_NAME}
         code = arm_error_code(result["stderr"])
-        return "creating the environment VM failed" + (f" ({code})" if code else "")
-    return {"kind": "vm", "group": group, "name": VM_NAME}
+        codes.append(code or "unknown")
+        if result.get("timed_out"):
+            break
+    return "creating the environment VM failed (" + "; ".join(codes) + ")"
 
 
-_ARM_CODE = re.compile(r"\(([A-Z][A-Za-z0-9.]{2,60})\)|\b(?:Error)?Code:\s*([A-Z][A-Za-z0-9.]{2,60})\b")
+_ARM_CODE = re.compile(r"(?:ERROR:|Details:)\s*\(([A-Z][A-Za-z0-9.]{2,60})\)|\b(?:Error)?Code:\s*([A-Z][A-Za-z0-9.]{2,60})\b")
 
 
 def arm_error_code(stderr_path):
