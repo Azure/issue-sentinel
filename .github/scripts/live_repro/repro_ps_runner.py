@@ -190,7 +190,7 @@ def cmd_verify(args):
                 POWERSHELL_REPOSITORY, pr_number, head_sha,
             )
         except VerificationError as exc:
-            print(f"::error::PR #{int(pr_number)} cannot be re-run "
+            print(f"::error::{'The candidate' if int(pr_number) == 0 else f'PR #{int(pr_number)}'} cannot be re-run "
                   f"({len(exc.errors)} problem(s)).")
             for error in exc.errors:
                 print(f"- {error}")

@@ -3,7 +3,8 @@ run-name: Live Repro (${{ inputs.issue }} @ ${{ inputs.spec_hash }}${{ inputs.pr
 
 # Reproduces Azure CLI issues for the X Engineering Agent in a throwaway BAMI resource group.
 # Steps come from public issue text; read .github/scripts/live_repro/README.md before changing this.
-# PR-head re-runs only accept an open PR from the Agent's own fork whose head is pr_head_sha.
+# PR-head re-runs only accept an open PR from the Agent's own fork whose head is pr_head_sha,
+# or with pr_number 0 the Agent fork branch xea-candidate/<pr_head_sha> pointing at pr_head_sha.
 # build-pr checks it out with persist-credentials: false and builds wheels with no secrets, no id-token;
 # the reproduce job only installs those wheels and runs the PR's CLI in "Run ReproSpec".
 # Never interpolate ${{ inputs.* }} into run: scripts; pass values via env.
@@ -30,7 +31,7 @@ on:
         required: true
         type: string
       pr_number:
-        description: "Optional PR number: re-run the spec on dev (before) and the PR head (after)"
+        description: "Optional PR number (0 for an Agent candidate branch): re-run the spec on dev (before) and the head (after)"
         required: false
         type: string
         default: ""
