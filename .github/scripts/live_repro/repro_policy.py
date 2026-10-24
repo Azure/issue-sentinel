@@ -21,6 +21,14 @@ LIVE_REPRO_POWERSHELL_WORKFLOW = os.environ.get(
     "LIVE_REPRO_POWERSHELL_WORKFLOW", "live-repro-powershell.yml",
 )
 
+# A run that fails at sandbox sign-in or runner setup is re-run after these delays
+# (minutes) before the Fixer may continue without a reproduction.
+REPRO_INFRA_RETRY_MINUTES = tuple(
+    int(item) for item in os.environ.get(
+        "LIVE_REPRO_INFRA_RETRY_MINUTES", "30,120,360",
+    ).split(",") if item.strip()
+)
+
 REPRO_SCHEMA_VERSION = 1
 REPRO_MAX_STEPS = 30
 # Empty directories created in the step working directory (cwd-dependent bugs).
@@ -55,9 +63,72 @@ REPRO_DEFAULT_OS = "linux"
 REPRO_SHELLS = {
     "linux": ("bash", "sh", "pwsh"),
     "macos": ("bash", "sh", "pwsh"),
-    "windows": ("bash", "pwsh", "cmd"),
+    "windows": ("bash", "pwsh", "powershell", "cmd"),
 }
 REPRO_MAX_SCRIPT_CHARS = 20000
+
+# Real environments a spec may name in "environment". Changing this widens what runs, so
+# get owner approval. Kinds:
+# - runner: a pinned GitHub-hosted runner image.
+# - container: a distro image run under docker on the Linux runner; the CLI under test is
+#   installed inside it ("install": "package" from packages.microsoft.com or the distro, or
+#   "pip" into a venv). Azure specs reach the runner's sign in through a mounted config dir.
+# - vm: a throwaway BAMI VM in the per-run resource group with no managed identity and no
+#   public IP. The runner signs in only to create, drive (az vm run-command) and delete it;
+#   steps run in the guest, never signed in, so these specs need "azure": false.
+REPRO_ENVIRONMENTS = {
+    "ubuntu-22.04": {"os": "linux", "kind": "runner", "runner": "ubuntu-22.04"},
+    "ubuntu-24.04": {"os": "linux", "kind": "runner", "runner": "ubuntu-24.04"},
+    "windows-server-2022": {"os": "windows", "kind": "runner", "runner": "windows-2022"},
+    "windows-server-2025": {"os": "windows", "kind": "runner", "runner": "windows-2025"},
+    "macos-13": {"os": "macos", "kind": "runner", "runner": "macos-13"},
+    "macos-14": {"os": "macos", "kind": "runner", "runner": "macos-14"},
+    "macos-15": {"os": "macos", "kind": "runner", "runner": "macos-15"},
+    "ubuntu-20.04": {"os": "linux", "kind": "container", "family": "debian",
+                     "image": "docker.io/library/ubuntu:20.04"},
+    "debian-11": {"os": "linux", "kind": "container", "family": "debian",
+                  "image": "docker.io/library/debian:11"},
+    "debian-12": {"os": "linux", "kind": "container", "family": "debian",
+                  "image": "docker.io/library/debian:12"},
+    "rhel-8": {"os": "linux", "kind": "container", "family": "rhel", "release": "8",
+               "image": "registry.access.redhat.com/ubi8/ubi:latest"},
+    "rhel-9": {"os": "linux", "kind": "container", "family": "rhel", "release": "9",
+               "image": "registry.access.redhat.com/ubi9/ubi:latest"},
+    "centos-stream-9": {"os": "linux", "kind": "container", "family": "rhel", "release": "9",
+                        "image": "quay.io/centos/centos:stream9"},
+    "fedora-41": {"os": "linux", "kind": "container", "family": "rhel", "release": "9",
+                  "image": "docker.io/library/fedora:41"},
+    "amazonlinux-2023": {"os": "linux", "kind": "container", "family": "rhel", "release": "9",
+                         "image": "public.ecr.aws/amazonlinux/amazonlinux:2023"},
+    "azurelinux-3": {"os": "linux", "kind": "container", "family": "tdnf",
+                     "image": "mcr.microsoft.com/azurelinux/base/core:3.0"},
+    "cbl-mariner-2": {"os": "linux", "kind": "container", "family": "tdnf",
+                      "image": "mcr.microsoft.com/cbl-mariner/base/core:2.0"},
+    "opensuse-leap-15": {"os": "linux", "kind": "container", "family": "suse",
+                         "image": "registry.opensuse.org/opensuse/leap:15.6"},
+    "sles-15": {"os": "linux", "kind": "container", "family": "suse",
+                "image": "registry.suse.com/bci/bci-base:15.6"},
+    "alpine-3": {"os": "linux", "kind": "container", "family": "alpine",
+                 "image": "docker.io/library/alpine:3.20"},
+    "windows-11": {"os": "windows", "kind": "vm",
+                   "image": "MicrosoftWindowsDesktop:windows-11:win11-24h2-ent:latest"},
+    "windows-10": {"os": "windows", "kind": "vm",
+                   "image": "MicrosoftWindowsDesktop:windows-10:win10-22h2-ent-g2:latest"},
+    "windows-server-2019": {"os": "windows", "kind": "vm",
+                            "image": "MicrosoftWindowsServer:WindowsServer:2019-datacenter-gensecond:latest"},
+    "windows-server-2016": {"os": "windows", "kind": "vm",
+                            "image": "MicrosoftWindowsServer:WindowsServer:2016-datacenter-gensecond:latest"},
+}
+# Install methods per container family; the first is the default. Alpine has no package.
+REPRO_CONTAINER_INSTALLS = {
+    "debian": ("package", "pip"), "rhel": ("package", "pip"), "tdnf": ("package", "pip"),
+    "suse": ("package", "pip"), "alpine": ("pip",),
+}
+REPRO_CONTAINER_SHELLS = ("bash", "sh")
+# Windows VMs install the official MSI; Git Bash and PowerShell 7 install only when a step uses them.
+REPRO_VM_SHELLS = ("bash", "pwsh", "powershell", "cmd")
+REPRO_VM_SIZE = "Standard_D2s_v5"
+REPRO_VM_MAX_MINUTES = 60
 
 # The PR-head re-run gates ready-for-review; a run slower than this counts as blocked.
 REPRO_AFTER_TIMEOUT_MINUTES = max(

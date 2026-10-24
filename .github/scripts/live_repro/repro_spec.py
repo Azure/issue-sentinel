@@ -39,6 +39,8 @@ REPRO_SPEC_SCHEMA = {
         },
         "reported_version": {"type": "string"},
         "os": {"enum": list(settings.REPRO_OPERATING_SYSTEMS)},
+        "environment": {"enum": sorted(settings.REPRO_ENVIRONMENTS)},
+        "install": {"enum": ["package", "pip"]},
         "azure": {"type": "boolean"},
         "module": {"type": "string", "pattern": r"^Az\.[A-Za-z]{2,40}$"},
         "location": {"enum": list(settings.REPRO_ALLOWED_LOCATIONS)},
@@ -176,7 +178,7 @@ _TOP_KEYS = frozenset({
     "schema_version", "issue", "tool", "versions", "reported_version",
     "module",
     "location", "setup", "repro", "observed_in_issue", "timeout_minutes",
-    "workdir_dirs", "input_file", "os", "azure",
+    "workdir_dirs", "input_file", "os", "azure", "environment", "install",
 })
 _INPUT_FILE_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\u2028\u2029]")
 _OBSERVED_KEYS = frozenset({"exit_code", "error_substring", "output_substring"})
@@ -1011,6 +1013,37 @@ def input_file_name(spec):
     return f"repro-input.{input_file['extension']}"
 
 
+def _validate_environment(spec, os_name, azure, ps, errors):
+    """(environment, install, os) for the named environment; os follows the environment."""
+    environment, install = spec.get("environment"), spec.get("install")
+    if environment is None:
+        if install is not None:
+            errors.append("install: only allowed with a container environment")
+        return None, None, os_name
+    entry = settings.REPRO_ENVIRONMENTS.get(environment) if isinstance(environment, str) else None
+    if entry is None:
+        errors.append(f"environment: must be one of {sorted(settings.REPRO_ENVIRONMENTS)}")
+        return None, None, os_name
+    if ps:
+        errors.append("environment: only supported for az specs")
+    if "os" in spec and spec["os"] != entry["os"]:
+        errors.append(f"os: environment `{environment}` runs {entry['os']}")
+    if entry["kind"] == "vm" and azure:
+        errors.append(
+            f"azure: `{environment}` runs steps in a VM that never signs in, so set \"azure\": false"
+        )
+    if entry["kind"] != "container":
+        if install is not None:
+            errors.append("install: only allowed with a container environment")
+        return environment, None, entry["os"]
+    methods = settings.REPRO_CONTAINER_INSTALLS[entry["family"]]
+    if install is None:
+        install = methods[0]
+    elif install not in methods:
+        errors.append(f"install: `{environment}` supports {list(methods)}")
+    return environment, install, entry["os"]
+
+
 def _uses_file_placeholder(steps):
     return any(
         "{file}" in json.dumps(step.get("argv") or step.get("parameters"))
@@ -1120,7 +1153,16 @@ def validate_spec(spec):
         azure = True
     if ps and (os_name != settings.REPRO_DEFAULT_OS or not azure):
         errors.append("os and azure: only supported for az specs")
-    shells = () if azure or ps else settings.REPRO_SHELLS[os_name]
+    environment, install, os_name = _validate_environment(spec, os_name, azure, ps, errors)
+    kind = (settings.REPRO_ENVIRONMENTS.get(environment) or {}).get("kind")
+    if azure or ps:
+        shells = ()
+    elif kind == "container":
+        shells = settings.REPRO_CONTAINER_SHELLS
+    elif kind == "vm":
+        shells = settings.REPRO_VM_SHELLS
+    else:
+        shells = settings.REPRO_SHELLS[os_name]
     setup = _validate_steps(spec.get("setup"), "setup", ps, errors, shells)
     repro = _validate_steps(spec.get("repro"), "repro", ps, errors, shells)
     if not isinstance(spec.get("repro"), list) or not spec.get("repro"):
@@ -1191,6 +1233,10 @@ def validate_spec(spec):
         normalized["input_file"] = input_file
     if os_name != settings.REPRO_DEFAULT_OS:
         normalized["os"] = os_name
+    if environment is not None:
+        normalized["environment"] = environment
+    if install is not None:
+        normalized["install"] = install
     if not azure:
         normalized["azure"] = False
     return {

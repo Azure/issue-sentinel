@@ -17,6 +17,9 @@ Paths below are relative to the repository root.
 | `.github/scripts/live_repro/repro_ps.ps1` | Trusted pwsh script run with `-File` (never `-Command`): installs modules, signs in, manages the resource group and calls one allowlisted cmdlet by splatting a checked parameter hashtable. |
 | `.github/scripts/live_repro/repro_sanitize.py` | Builds `repro.redacted.json`; the comment above `RESULT_FILE_NAME` documents the result schema the Agent consumes. |
 | `.github/scripts/live_repro/repro_janitor.py` | Janitor logic. |
+| `.github/scripts/live_repro/repro_env.py` | Starts and stops the spec's `environment` (a distro container or a Windows client VM) and runs install and steps inside it. |
+| `.github/scripts/live_repro/repro_container_install.sh` | Trusted installer run as root in the container. Installs the CLI with the distro's own package manager (or pip) at the requested version and prints `XEA_AZ=<path>`. |
+| `.github/scripts/live_repro/repro_vm_guest.ps1` | Trusted Windows PowerShell 5.1 wrapper sent with `az vm run-command`. Installs the MSI or source, prepares files and runs one step, printing `XEA-RESULT:<base64 json>`. |
 | `.github/scripts/live_repro/repro_spec.py`, `repro_policy.py`, `repro_sensitive_data.py` | **Generated** stdlib copies of the Agent's ReproSpec validator, its policy and `src/security/sensitive_data.py`. Do not edit (see below). |
 | `.github/workflows/live-repro-tests.yml` | Runs `tests/live_repro` on pull requests and pushes to `main` that touch these files. No secrets. |
 
@@ -54,6 +57,22 @@ Paths below are relative to the repository root.
   runner. On Windows `latest` and `reported` extract the official MSI
   (`msiexec /a`, no registry or uninstall of the preinstalled CLI); other
   versions use a venv as on Linux.
+- Environments: the spec's `environment` picks where steps run. `runner` kinds
+  use the hosted runner directly. `container` kinds (Ubuntu, Debian, RHEL,
+  Azure Linux, SUSE, Alpine and more, see `REPRO_ENVIRONMENTS`) start the
+  pinned image with `--security-opt no-new-privileges`, mount only the
+  workspace (and `~/.azure` read through `AZURE_CONFIG_DIR` for Azure specs)
+  and install the CLI as root with `repro_container_install.sh` using the
+  spec's `install` method (`package` uses the distro repo from
+  packages.microsoft.com, `pip` uses PyPI). Steps then run as the runner
+  uid. `vm` kinds (Windows 10 and 11 client images) run in the
+  `reproduce-vm` job, which creates a VM in the run's resource group with no
+  identity, public IP or NSG and drives it only through `az vm run-command`.
+  VM specs must set `"azure": false`, so no credential ever reaches the
+  guest. PR code reaches the VM as a codeload zip of the verified head sha.
+  Run Command output is capped at 4 KB, so the guest matches the spec's
+  observed strings itself and returns only short tails. The resource group
+  delete step removes the VM.
 - Scripts: specs with `"azure": false` may use `{"shell", "script"}` steps
   (`bash`, `sh`, `pwsh`, `cmd`; `bash` is Git Bash on Windows). They run in
   `reproduce-local`, which has only `contents: read`, no `id-token`, no

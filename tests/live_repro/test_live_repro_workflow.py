@@ -170,11 +170,17 @@ def test_matrix_comes_from_verified_spec(repro):
     local = repro["jobs"]["reproduce-local"]
     # build-pr is skipped outside PR mode; reproduce still runs. Exactly one
     # of the two reproduce jobs runs, chosen by the verified spec.
-    for job, azure in ((reproduce, "true"), (local, "false")):
+    vm = repro["jobs"]["reproduce-vm"]
+    routes = (
+        (reproduce, "needs.prepare.outputs.azure == 'true'"),
+        (local, "needs.prepare.outputs.azure == 'false' && "
+                "needs.prepare.outputs.isolation != 'vm'"),
+        (vm, "needs.prepare.outputs.isolation == 'vm'"),
+    )
+    for job, route in routes:
         assert job["needs"] == ["prepare", "build-pr"]
         assert job["if"] == (
-            "always() && needs.prepare.result == 'success' && "
-            f"needs.prepare.outputs.azure == '{azure}'"
+            "always() && needs.prepare.result == 'success' && " + route
         )
         assert job["runs-on"] == "${{ needs.prepare.outputs.runs_on }}"
         assert job["defaults"] == {"run": {"shell": "bash"}}
@@ -184,7 +190,7 @@ def test_matrix_comes_from_verified_spec(repro):
             "version": "${{ fromJSON(needs.prepare.outputs.versions) }}",
         }
         assert job["timeout-minutes"] <= 240
-    for name in ("versions", "runs_on", "azure"):
+    for name in ("versions", "runs_on", "azure", "isolation"):
         assert prepare["outputs"][name] == f"${{{{ steps.verify.outputs.{name} }}}}"
     assert "verify" in _step(repro, "prepare", "Re-validate")["run"]
 
@@ -237,13 +243,16 @@ def test_azure_login_uses_bami_oidc(repro, janitor):
     for workflow in (repro, janitor):
         logins = [s for _j, s in _steps(workflow)
                   if s.get("uses", "").startswith("azure/login@")]
-        assert len(logins) == 1
-        assert logins[0]["with"] == {
-            "client-id": "${{ secrets.BAMI_CLIENT_ID }}",
-            "tenant-id": "${{ secrets.BAMI_TENANT_ID }}",
-            "subscription-id": "${{ secrets.BAMI_SUBSCRIPTION_ID }}",
-            "allow-no-subscriptions": False,
-        }
+        assert len(logins) == (2 if workflow is repro else 1)
+        for login in logins:
+            assert login["with"] == {
+                "client-id": "${{ secrets.BAMI_CLIENT_ID }}",
+                "tenant-id": "${{ secrets.BAMI_TENANT_ID }}",
+                "subscription-id": "${{ secrets.BAMI_SUBSCRIPTION_ID }}",
+                "allow-no-subscriptions": False,
+            }
+    assert {job for job, s in _steps(repro)
+            if s.get("uses", "").startswith("azure/login@")} == {"reproduce", "reproduce-vm"}
     assert "azure/login" not in str(repro["jobs"]["prepare"])
     assert "azure/login" not in str(repro["jobs"]["report"])
 
@@ -255,6 +264,7 @@ def test_only_redacted_json_is_uploaded(repro):
         ("build-pr", "repro-pr-wheels"),
         ("reproduce", "repro-redacted-${{ matrix.version }}"),
         ("reproduce-local", "repro-redacted-${{ matrix.version }}"),
+        ("reproduce-vm", "repro-redacted-${{ matrix.version }}"),
         ("report", "repro-redacted"),
     }
     # The credential-less build job only uploads the PR head wheels.
@@ -272,7 +282,7 @@ def test_only_redacted_json_is_uploaded(repro):
 
 def test_report_job_runs_after_all_versions(repro):
     report = repro["jobs"]["report"]
-    assert report["needs"] == ["prepare", "reproduce", "reproduce-local"]
+    assert report["needs"] == ["prepare", "reproduce", "reproduce-local", "reproduce-vm"]
     assert report["if"] == "always() && needs.prepare.result == 'success'"
     assert "merge" in _step(repro, "report", "Merge")["run"]
 
