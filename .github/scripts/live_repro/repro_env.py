@@ -239,13 +239,17 @@ _ARM_CODE = re.compile(r"\(([A-Z][A-Za-z0-9.]{2,60})\)|\b(?:Error)?Code:\s*([A-Z
 
 
 def arm_error_code(stderr_path):
-    """The first ARM error code in az's stderr (a bare identifier, never message text)."""
+    """ARM error codes in az's stderr, outer first (bare identifiers, never message text)."""
     try:
         text = Path(stderr_path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
-    match = _ARM_CODE.search(text)
-    return (match.group(1) or match.group(2)) if match else None
+    codes = []
+    for match in _ARM_CODE.finditer(text):
+        code = match.group(1) or match.group(2)
+        if code not in codes:
+            codes.append(code)
+    return ", ".join(codes[:4]) or None
 
 
 def guest_script(config):

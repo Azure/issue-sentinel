@@ -209,14 +209,17 @@ def test_vm_create_failure_reports_only_the_arm_code(tmp_path):
         def __call__(self, argv, log_stem, **kwargs):
             result = super().__call__(argv, log_stem, **kwargs)
             Path(result["stderr"]).write_text(
-                "ERROR: (SkuNotAvailable) The requested size for resource "
-                "'/subscriptions/0000/xeavm' is currently not available\nCode: SkuNotAvailable\n")
+                "ERROR: (InvalidTemplateDeployment) The template deployment is not valid\n"
+                "Code: InvalidTemplateDeployment\nException Details:\t(SkuNotAvailable) The "
+                "requested size for resource '/subscriptions/0000/xeavm' is not available\n"
+                "\tCode: SkuNotAvailable\n")
             return result
 
     spec = _valid(_local_spec(environment="windows-11"))
     state = repro_env.vm_up(spec, run=Failing(tmp_path, codes=[1]), az="az",
                             group="g", log_dir=tmp_path, password="x")
-    assert state == "creating the environment VM failed (SkuNotAvailable)"
+    assert state == ("creating the environment VM failed "
+                     "(InvalidTemplateDeployment, SkuNotAvailable)")
     (tmp_path / "e.err").write_text("ERROR: something odd\n")
     assert repro_env.arm_error_code(tmp_path / "e.err") is None
 
