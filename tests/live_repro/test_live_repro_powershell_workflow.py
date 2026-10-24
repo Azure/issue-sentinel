@@ -295,6 +295,8 @@ def test_only_redacted_json_is_uploaded_under_the_shared_artifact_names(ps, cli)
         ("build-pr", "repro-pr-wheels", "repro/wheels/"),
         ("reproduce-local", "repro-redacted-${{ matrix.version }}",
          "repro/out/repro.redacted.json"),
+        ("reproduce-vm", "repro-redacted-${{ matrix.version }}",
+         "repro/out/repro.redacted.json"),
     }
     for job, step in _steps(ps):
         if step.get("uses", "").startswith("actions/upload-artifact@"):

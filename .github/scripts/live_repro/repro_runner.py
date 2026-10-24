@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import repro_env
 import repro_policy as policy
 import repro_spec
 
@@ -38,6 +39,8 @@ INSTALL_FILE = RAW_DIR / "install.json"
 RAW_RESULT_FILE = RAW_DIR / "repro.raw.json"
 MSI_DIR = WORKSPACE / "msi"
 SCRIPT_DIR = RAW_DIR / "scripts"
+ENV_DIR = RAW_DIR / "env"
+ENV_STATE = ENV_DIR / "state.json"
 WINDOWS = os.name == "nt"
 RUNNER_LABELS = {"linux": "ubuntu-latest", "windows": "windows-latest",
                  "macos": "macos-latest"}
@@ -394,7 +397,8 @@ def cmd_verify(args):
             return 1
     write_outputs({
         "versions": json.dumps(versions),
-        "runs_on": RUNNER_LABELS[spec.get("os", "linux")],
+        "runs_on": repro_env.runs_on(spec, RUNNER_LABELS),
+        "isolation": "vm" if repro_env.kind(spec) == "vm" else "host",
         "azure": "false" if spec.get("azure") is False else "true",
         "timeout_minutes": spec["timeout_minutes"],
         "step_timeout_minutes": spec["timeout_minutes"] + 5,
@@ -407,7 +411,7 @@ def cmd_verify(args):
     print(
         f"ReproSpec {os.environ['REPRO_SPEC_HASH'][:12]} verified: "
         f"tool {spec['tool']}, {steps} step(s), versions {', '.join(versions)}, "
-        f"os {spec.get('os', 'linux')}"
+        f"{repro_env.describe(spec)}"
         f"{'' if spec.get('azure') is not False else ', no Azure sign in'}."
     )
     return 0
@@ -610,6 +614,8 @@ def cmd_install(args):
         print("::error::Unknown reproduction version.")
         return 1
     extension = extension_name(spec)
+    if repro_env.kind(spec) == "vm":
+        return _install_vm(spec, version, extension)
     wheels = None
     if version == "pr":
         try:
@@ -632,6 +638,8 @@ def cmd_install(args):
         return 1
     EXTENSION_DIR.mkdir(parents=True, exist_ok=True)
     extra = {"AZURE_EXTENSION_DIR": str(EXTENSION_DIR.resolve())}
+    if repro_env.kind(spec) == "container":
+        return _install_container(spec, version, extension, wheels, extra)
     msi = None
     if WINDOWS and version in ("latest", "reported") and not extension:
         msi = _install_msi(spec, version)
@@ -656,11 +664,7 @@ def cmd_install(args):
             "extension_version": None, "source_sha": None, **(msi or {})}
     if version == "pr":
         # No PR code runs before the sandboxed `run` step.
-        by_name = {w["distribution"]: w["version"] for w in wheels}
-        info["cli_version"] = by_name.get("azure_cli")
-        if extension:
-            info["extension_version"] = wheels[0]["version"]
-        info["source_sha"] = os.environ.get("REPRO_PR_HEAD_SHA", "").strip()
+        _pr_wheel_info(info, wheels, extension)
         _write_json(INSTALL_FILE, info)
         write_outputs({"source_ref": info["source_sha"]})
         print("Installed the PR head wheels.")
@@ -677,6 +681,105 @@ def cmd_install(args):
     _write_json(INSTALL_FILE, info)
     write_outputs({"source_ref": source_ref(spec, info)})
     print(f"Installed azure-cli {info['cli_version'] or 'unknown'} for `{version}`.")
+    return 0
+
+
+def _install_failed(version, error):
+    _write_json(INSTALL_FILE, {"version": version, "error": error})
+    print(f"::error::Installing the {version} CLI failed.")
+    return 1
+
+
+def _pr_wheel_info(info, wheels, extension):
+    by_name = {w["distribution"]: w["version"] for w in wheels}
+    info["cli_version"] = by_name.get("azure_cli")
+    if extension:
+        info["extension_version"] = wheels[0]["version"]
+    info["source_sha"] = os.environ.get("REPRO_PR_HEAD_SHA", "").strip()
+
+
+def _install_container(spec, version, extension, wheels, extra):
+    """Install inside the running environment container (distro package or pip)."""
+    state = _read_json(ENV_STATE) or {}
+    if state.get("kind") != "container":
+        return _install_failed(version, "the environment container is not running")
+    source = (SOURCE_DIR / "src").resolve()
+    files = [(WHEEL_DIR / w["file"]).resolve() for w in wheels or []]
+    if version == "pr":
+        cli_paths = ext_paths = files
+    else:
+        cli_paths = [source / name for name in
+                     ("azure-cli-telemetry", "azure-cli-core", "azure-cli")]
+        ext_paths = [source / extension] if extension else []
+    installed = repro_env.container_install(
+        spec, version, run=run_quiet, state=state, log_dir=RAW_DIR / "install",
+        workspace=WORKSPACE, timeout=INSTALL_TIMEOUT_SECONDS, extension=extension,
+        cli_paths=cli_paths, ext_paths=ext_paths, ext_dir=EXTENSION_DIR,
+    )
+    if isinstance(installed, str):
+        return _install_failed(version, installed)
+    print(f"install {spec['environment']}: done")
+    info = {"version": version, "error": None, "cli_version": None,
+            "extension_version": None, "source_sha": None,
+            "container_az": installed["az"]}
+    if version == "pr":
+        # No PR code runs before the `run` step, as on the host.
+        _pr_wheel_info(info, wheels, extension)
+    else:
+        result = run_quiet(
+            repro_env.container_exec(state, [installed["az"], "version", "-o", "json"],
+                                     env=repro_env.container_env(state, extra)),
+            RAW_DIR / "install" / "az-version", timeout=300,
+        )
+        data = _read_json(result["stdout"]) or {}
+        info["cli_version"] = data.get("azure-cli")
+        if extension:
+            info["extension_version"] = (data.get("extensions") or {}).get(extension)
+        if version == "dev":
+            info["source_sha"] = _source_sha(RAW_DIR / "install" / "git-sha")
+    _write_json(INSTALL_FILE, info)
+    write_outputs({"source_ref": source_ref(spec, info)})
+    print(f"Installed azure-cli {info['cli_version'] or 'unknown'} for `{version}` "
+          f"in {spec['environment']}.")
+    return 0
+
+
+def _install_vm(spec, version, extension):
+    """Install the real MSI (and dev or PR source) inside the environment VM."""
+    state = _read_json(ENV_STATE) or {}
+    if state.get("kind") != "vm":
+        return _install_failed(version, "the environment VM was not created")
+    repository = source_repository(spec)
+    sha = None
+    if version == "dev":
+        sha = repro_env.resolve_dev_sha(repository, DEV_REFS[repository], run=run_quiet,
+                                        log_dir=RAW_DIR / "install")
+        if not sha:
+            return _install_failed(version, "resolving the dev commit failed")
+    elif version == "pr":
+        sha = os.environ.get("REPRO_PR_HEAD_SHA", "").strip()
+        repository = agent_fork(repository)
+        if not repository or not _HEAD_SHA.match(sha):
+            return _install_failed(version, "the PR head is not an Agent fork commit")
+    cli = "latest" if extension or version in ("dev", "pr") else version
+    config = repro_env.vm_install_config(
+        spec, version, msi_url=msi_url(spec, cli), extension=extension,
+        source_repo=repository, source_sha=sha,
+    )
+    result = repro_env.vm_invoke(
+        state, config, run=run_quiet, az=system_az(), log_stem=RAW_DIR / "install" / "vm",
+        timeout=INSTALL_TIMEOUT_SECONDS * 2, attempts=repro_env.VM_INVOKE_ATTEMPTS,
+    )
+    if not result or not result.get("ok"):
+        reason = str((result or {}).get("error") or "the VM run command failed")[:300]
+        return _install_failed(version, f"installing in the VM failed: {reason}")
+    info = {"version": version, "error": None,
+            "cli_version": result.get("cli_version"),
+            "extension_version": result.get("extension_version"),
+            "source_sha": sha, "vm_source": result.get("source"), "vm_ready": True}
+    _write_json(INSTALL_FILE, info)
+    print(f"Installed azure-cli {info['cli_version'] or 'unknown'} for `{version}` "
+          f"in {spec['environment']}.")
     return 0
 
 
@@ -772,14 +875,20 @@ def generate_password():
     return f"Xr{core}9!a"
 
 
-def _matches(criteria, exit_code, stdout_text, stderr_text):
+def _matches(criteria, exit_code, stdout_text, stderr_text, found=(), group=""):
+    """Whether a step's result meets criteria.
+
+    found holds group.key ids a VM guest matched against output too long to return.
+    """
     checks = []
     if "exit_code" in criteria:
         checks.append(exit_code == criteria["exit_code"])
     if "error_substring" in criteria:
-        checks.append(criteria["error_substring"] in stderr_text)
+        checks.append(criteria["error_substring"] in stderr_text
+                      or f"{group}.error_substring" in found)
     if "output_substring" in criteria:
-        checks.append(criteria["output_substring"] in stdout_text)
+        checks.append(criteria["output_substring"] in stdout_text
+                      or f"{group}.output_substring" in found)
     return bool(checks) and all(checks)
 
 
@@ -814,7 +923,8 @@ def prepare_run(spec, *, resource_group, run_id, subscription_id=None,
     return values, resolved
 
 
-_SCRIPT_SUFFIX = {"bash": ".sh", "sh": ".sh", "pwsh": ".ps1", "cmd": ".cmd"}
+_SCRIPT_SUFFIX = {"bash": ".sh", "sh": ".sh", "pwsh": ".ps1", "powershell": ".ps1",
+                  "cmd": ".cmd"}
 
 
 def shell_argv(shell, path, windows=WINDOWS):
@@ -829,6 +939,9 @@ def shell_argv(shell, path, windows=WINDOWS):
     if shell == "pwsh":
         return [shutil.which("pwsh") or "pwsh", "-NoLogo", "-NoProfile",
                 "-NonInteractive", "-File", path]
+    if shell == "powershell":
+        return [shutil.which("powershell") or "powershell.exe", "-NoLogo", "-NoProfile",
+                "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path]
     return [os.environ.get("COMSPEC") or "cmd.exe", "/d", "/c", path]
 
 
@@ -844,10 +957,11 @@ def write_script(shell, script, path):
 
 def execute(spec, *, az_path, resource_group, run_id, subscription_id=None,
             deadline_seconds=None, raw_dir=RAW_DIR, work_dir=WORK_DIR,
-            log=print, path_dir=None, source_dir=None):
+            log=print, path_dir=None, source_dir=None, environment=None):
     """Run the setup and repro steps and return the raw, unredacted result.
 
     az_path is the argv prefix (or a single path) that runs the CLI under test.
+    environment is (state, install) when steps run in a container or VM.
     """
     raw_dir, work_dir = Path(raw_dir), Path(work_dir)
     az = [az_path] if isinstance(az_path, str) else list(az_path)
@@ -881,10 +995,65 @@ def execute(spec, *, az_path, resource_group, run_id, subscription_id=None,
             extra_env=extra,
         )
 
+    if environment and environment[0].get("kind") == "container":
+        launch = _container_launch(environment[0], az, extra, raw_dir, work_dir)
+    elif environment and environment[0].get("kind") == "vm":
+        launch = _vm_launch(spec, environment, raw_dir, work_dir)
     return run_steps(
         spec, resolved, values, launch=launch, display=display_step,
         deadline_seconds=deadline_seconds, log=log,
     )
+
+
+def _container_launch(state, az, extra, raw_dir, work_dir):
+    env = repro_env.container_env(state, extra)
+
+    def launch(phase, index, step, remaining):
+        if "shell" in step:
+            script = write_script(step["shell"], step["script"],
+                                  raw_dir / "scripts" / f"{phase}-{index}")
+            command = repro_env.container_shell(step["shell"], script.resolve())
+        else:
+            command = [az[0], *step["argv"][1:]]
+        return run_quiet(
+            repro_env.container_exec(state, command, env=env, cwd=work_dir),
+            raw_dir / "steps" / f"{phase}-{index}", timeout=remaining,
+        )
+    return launch
+
+
+def _vm_launch(spec, environment, raw_dir, work_dir):
+    state, install = environment
+    prepared = []
+
+    def launch(phase, index, step, remaining):
+        stem = raw_dir / "steps" / f"{phase}-{index}"
+        if not prepared:
+            ready = repro_env.vm_invoke(
+                state, repro_env.vm_prepare_config(work_dir, spec.get("workdir_dirs", [])),
+                run=run_quiet, az=system_az(), log_stem=raw_dir / "env" / "prepare",
+                timeout=900, attempts=repro_env.VM_INVOKE_ATTEMPTS,
+            )
+            if not (ready or {}).get("ok"):
+                return repro_env.write_step_logs(None, stem)
+            prepared.append(True)
+        script_bytes = script_name = None
+        if "shell" in step:
+            path = write_script(step["shell"], step["script"],
+                                raw_dir / "scripts" / f"{phase}-{index}")
+            script_bytes, script_name = path.read_bytes(), path.name
+        config = repro_env.vm_step_config(
+            step, timeout=remaining, script_bytes=script_bytes, script_name=script_name,
+            env=repro_env.vm_env(_CHILD_ENV_FIXED, install.get("vm_source"),
+                                 step.get("shell")),
+            found_needles=repro_env.needles(spec, phase, index),
+        )
+        result = repro_env.vm_invoke(
+            state, config, run=run_quiet, az=system_az(),
+            log_stem=raw_dir / "env" / f"{phase}-{index}", timeout=remaining + 600,
+        )
+        return repro_env.write_step_logs(result, stem)
+    return launch
 
 
 def run_steps(spec, resolved, values, *, launch, display,
@@ -914,7 +1083,9 @@ def run_steps(spec, resolved, values, *, launch, display,
                 entry["skipped"] = True
                 steps.append(entry)
                 continue
-            result = launch(phase, index, step, remaining)
+            result = dict(launch(phase, index, step, remaining))
+            found = result.pop("found", None) or ()
+            infra_error = result.pop("infra_error", False)
             entry.update(result)
             stdout_text = _read_text(result["stdout"])
             stderr_text = _read_text(result["stderr"])
@@ -924,11 +1095,12 @@ def run_steps(spec, resolved, values, *, launch, display,
             if expect:
                 entry["expect_met"] = _matches(
                     expect, result["exit_code"], stdout_text, stderr_text,
+                    found, "expect",
                 )
             if phase == "repro":
                 entry["observed_matched"] = _matches(
                     spec["observed_in_issue"], result["exit_code"],
-                    stdout_text, stderr_text,
+                    stdout_text, stderr_text, found, "observed",
                 )
             steps.append(entry)
             verdict = ""
@@ -938,7 +1110,9 @@ def run_steps(spec, resolved, values, *, launch, display,
                            " (observed behaviour: not matched)")
             shown = "timeout" if result["timed_out"] else f"exit {result['exit_code']}"
             log(f"{phase}[{index}]: {shown} ({result['duration_seconds']}s){verdict}")
-            if result["timed_out"]:
+            if infra_error:
+                status = "error"
+            elif result["timed_out"]:
                 status = "timeout"
             elif phase == "setup" and not entry["expect_met"]:
                 status = "setup_failed"
@@ -964,7 +1138,13 @@ def cmd_run(args):
     """Run the verified spec against the installed CLI version."""
     spec = verify_from_env()
     install = _read_json(INSTALL_FILE) or {}
-    az = az_command(install)
+    state = _read_json(ENV_STATE) if repro_env.kind(spec) in ("container", "vm") else None
+    if state and state.get("kind") == "container":
+        az = [install["container_az"]] if install.get("container_az") else None
+    elif state and state.get("kind") == "vm":
+        az = ["az"] if install.get("vm_ready") else None
+    else:
+        az = az_command(install)
     if install.get("error") or not az:
         _write_json(RAW_RESULT_FILE, {"status": "error", "reproduced": None,
                                       "steps": [], "error": "CLI not installed",
@@ -976,6 +1156,7 @@ def cmd_run(args):
     raw = execute(
         spec, az_path=az, resource_group=group,
         path_dir=bin_dir(install), source_dir=source,
+        environment=(state, install) if state else None,
         run_id=run_key(os.environ.get("GITHUB_RUN_ID", "local"),
                        os.environ.get("REPRO_VERSION", "latest")),
         subscription_id=os.environ.get("REPRO_SUBSCRIPTION_ID") or None,
@@ -984,6 +1165,45 @@ def cmd_run(args):
     verdict = {True: "reproduced", False: "not reproduced", None: "inconclusive"}
     print(f"Result ({os.environ.get('REPRO_VERSION')}): {raw['status']}, "
           f"{verdict[raw['reproduced']]}.")
+    return 0
+
+
+def cmd_env_up(args):
+    """Start the spec's container, or create its VM in the per-run resource group."""
+    spec = verify_from_env()
+    kind = repro_env.kind(spec)
+    version = os.environ.get("REPRO_VERSION", "")
+    if kind == "container":
+        state = repro_env.container_up(
+            spec, run=run_quiet, workspace=WORKSPACE, log_dir=ENV_DIR,
+            key=run_key(os.environ.get("GITHUB_RUN_ID", "local"), version),
+            azure=spec.get("azure") is not False,
+        )
+    elif kind == "vm":
+        state = repro_env.vm_up(
+            spec, run=run_quiet, az=system_az(), group=resource_group_for(spec),
+            log_dir=ENV_DIR, password=generate_password(),
+        )
+    else:
+        print("This spec runs directly on the runner.")
+        return 0
+    if isinstance(state, str):
+        _write_json(INSTALL_FILE, {"version": version, "error": state})
+        print(f"::error::The {spec['environment']} environment did not start.")
+        return 1
+    _write_json(ENV_STATE, state)
+    print(f"Environment {spec['environment']} is up ({kind}).")
+    return 0
+
+
+def cmd_env_down(args):
+    """Remove the spec's container; VMs go with the per-run resource group."""
+    state = _read_json(ENV_STATE)
+    if not state or state.get("kind") != "container":
+        print("No environment container to remove.")
+        return 0
+    result = repro_env.container_down(state, run=run_quiet, log_dir=ENV_DIR)
+    print(f"Environment container removed: exit {result['exit_code']}.")
     return 0
 
 
@@ -1004,6 +1224,8 @@ COMMANDS = {
     "build": cmd_build,
     "install": cmd_install,
     "rg-create": cmd_rg_create,
+    "env-up": cmd_env_up,
+    "env-down": cmd_env_down,
     "run": cmd_run,
     "rg-delete": cmd_rg_delete,
     "logout": cmd_logout,
