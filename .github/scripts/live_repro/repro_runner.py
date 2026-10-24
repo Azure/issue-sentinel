@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -57,7 +58,10 @@ LIFECYCLE_TIMEOUT_SECONDS = 20 * 60
 # Written by rg-create before it creates the group.
 GROUP_MARKER = RAW_DIR / "lifecycle" / "group-requested"
 _HASH = re.compile(r"^[0-9a-f]{64}$")
-_PR_NUMBER = re.compile(r"^[1-9]\d{0,8}$")
+_PR_NUMBER = re.compile(r"^(?:0|[1-9]\d{0,8})$")
+# pr_number 0 verifies an unpublished candidate pushed to this branch on the Agent fork.
+CANDIDATE_PR = "0"
+CANDIDATE_BRANCH_PREFIX = "xea-candidate/"
 _HEAD_SHA = re.compile(r"^[0-9a-f]{40}$")
 _REPOSITORY = re.compile(r"^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$")
 _WHEEL_NAME = re.compile(
@@ -107,7 +111,7 @@ def verify_dispatch(spec_text, spec_hash, issue, pr_number="", pr_head_sha=""):
     if not _HASH.match(spec_hash):
         raise VerificationError(["spec_hash: must be 64 lowercase hex characters"])
     if pr_number and not _PR_NUMBER.match(pr_number):
-        raise VerificationError(["pr_number: must be a positive integer"])
+        raise VerificationError(["pr_number: must be 0 for a candidate or a positive integer"])
     if pr_number and not _HEAD_SHA.match(pr_head_sha):
         raise VerificationError([
             "pr_head_sha: must be the 40 lowercase hex commit SHA of the PR head"
@@ -192,14 +196,52 @@ def _fetch_pull_request(repository, pr_number, env=None):
         return json.loads(response.read(1_000_000).decode("utf-8"))
 
 
-def verify_pull_request(repository, pr_number, head_sha, *, fetch=None):
+def candidate_branch(head_sha):
+    return f"{CANDIDATE_BRANCH_PREFIX}{head_sha}"
+
+
+def _fetch_branch(fork, branch, env=None):
+    env = os.environ if env is None else env
+    request = urllib.request.Request(
+        f"{GITHUB_API}/repos/{fork}/branches/{urllib.parse.quote(branch, safe='')}",
+        headers={"Accept": "application/vnd.github+json",
+                 "X-GitHub-Api-Version": "2022-11-28",
+                 "User-Agent": "issue-sentinel-live-repro"},
+    )
+    token = env.get("REPRO_GITHUB_TOKEN")
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read(1_000_000).decode("utf-8"))
+
+
+def verify_candidate(fork, head_sha, *, fetch_branch=None):
+    """Check that the Agent fork's candidate branch for head_sha points at head_sha.
+
+    Only the Agent can push to its fork, so this proves the Agent produced the commit.
+    """
+    fetch_branch = fetch_branch or _fetch_branch
+    try:
+        branch = fetch_branch(fork, candidate_branch(head_sha))
+    except (OSError, ValueError, urllib.error.URLError):
+        raise VerificationError(["pr_number: the candidate branch could not be read"]) from None
+    commit = branch.get("commit") if isinstance(branch, dict) else None
+    if not isinstance(commit, dict) or commit.get("sha") != head_sha:
+        raise VerificationError(["pr_head_sha: the candidate branch does not point at this commit"])
+    return fork
+
+
+def verify_pull_request(repository, pr_number, head_sha, *, fetch=None, fetch_branch=None):
     """Check that the PR is an open Agent PR whose head is exactly head_sha.
 
+    pr_number 0 checks the Agent fork's candidate branch instead of a PR.
     Returns the fork to check out. Errors use fixed messages; API text is never printed.
     """
     fork = agent_fork(repository)
     if not fork:
         raise VerificationError([f"pr_number: no Agent fork is configured for {repository}"])
+    if str(pr_number).strip() == CANDIDATE_PR:
+        return verify_candidate(fork, head_sha, fetch_branch=fetch_branch)
     fetch = fetch or _fetch_pull_request
     try:
         pr = fetch(repository, pr_number)
@@ -390,7 +432,7 @@ def cmd_verify(args):
         try:
             pr_repo = verify_pull_request(repository, pr_number, head_sha)
         except VerificationError as exc:
-            print(f"::error::PR #{int(pr_number)} cannot be re-run "
+            print(f"::error::{'The candidate' if int(pr_number) == 0 else f'PR #{int(pr_number)}'} cannot be re-run "
                   f"({len(exc.errors)} problem(s)).")
             for error in exc.errors:
                 print(f"- {error}")

@@ -140,7 +140,7 @@ def test_cli_and_powershell_runners_refuse_each_others_specs():
     (lambda i: {**i, "spec_hash": "0" * 64}, "does not match spec_hash"),
     (lambda i: {**i, "issue": "Azure/azure-powershell#1"}, "issue: does not match"),
     (lambda i: {**i, "pr_number": "$(iex)", "pr_head_sha": HEAD},
-     "pr_number: must be a positive integer"),
+     "pr_number: must be 0 for a candidate or a positive integer"),
     (lambda i: {**i, "pr_number": "5"}, "pr_head_sha"),
     (lambda i: {**i, "pr_number": "5", "pr_head_sha": "C" * 40}, "pr_head_sha"),
     (lambda i: {**i, "pr_number": "5", "pr_head_sha": "c" * 39}, "pr_head_sha"),

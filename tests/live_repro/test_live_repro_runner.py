@@ -296,6 +296,49 @@ def test_verify_pull_request_fails_closed_on_api_errors():
     assert "boom" not in str(exc.value)
 
 
+def test_candidate_mode_checks_the_agent_fork_branch_not_a_pr():
+    fork = repro_runner.agent_fork("Azure/azure-cli")
+    calls = []
+
+    def fetch_branch(repository, branch):
+        calls.append((repository, branch))
+        return {"name": branch, "commit": {"sha": HEAD}}
+
+    def fetch(*_):
+        raise AssertionError("candidate mode must not read a PR")
+
+    assert repro_runner.verify_pull_request(
+        "Azure/azure-cli", "0", HEAD, fetch=fetch, fetch_branch=fetch_branch) == fork
+    assert calls == [(fork, f"xea-candidate/{HEAD}")]
+
+
+@pytest.mark.parametrize("branch, message", [
+    ({"commit": {"sha": "d" * 40}}, "does not point at this commit"),
+    ({"commit": None}, "does not point at this commit"),
+    ("not a dict", "does not point at this commit"),
+    (OSError("boom"), "could not be read"),
+])
+def test_candidate_mode_fails_closed(branch, message):
+    def fetch_branch(*_):
+        if isinstance(branch, Exception):
+            raise branch
+        return branch
+
+    with pytest.raises(repro_runner.VerificationError) as exc:
+        repro_runner.verify_pull_request(
+            "Azure/azure-cli", "0", HEAD, fetch_branch=fetch_branch)
+    assert message in str(exc.value) and "boom" not in str(exc.value)
+
+
+def test_candidate_mode_is_a_valid_dispatch_with_dev_and_pr_versions():
+    inputs = _dispatch()
+    spec = repro_runner.verify_spec(inputs["spec"], inputs["spec_hash"], ISSUE, "0", HEAD)
+    assert repro_runner.matrix_versions(spec, "0") == ["dev", "pr"]
+    with pytest.raises(repro_runner.VerificationError) as exc:
+        repro_runner.verify_spec(inputs["spec"], inputs["spec_hash"], ISSUE, "00", HEAD)
+    assert "positive integer" in str(exc.value)
+
+
 def test_verify_command_pr_mode_outputs_fork_and_sha(tmp_path, monkeypatch, capsys):
     inputs = _dispatch()
     output = tmp_path / "out.txt"

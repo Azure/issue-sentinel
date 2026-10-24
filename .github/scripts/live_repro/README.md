@@ -96,6 +96,11 @@ as untrusted:
   issue's repository, that its head repository is the configured Agent fork
   (`agent_fork` in the vendored profiles) and that its head is exactly
   `pr_head_sha`; anything else fails closed.
+- `pr_number` `0` is candidate mode. The Agent pushes an unpublished fix to
+  `xea-candidate/<pr_head_sha>` on its fork and asks for a run before it opens
+  a PR. `prepare` checks that this fork branch points at exactly
+  `pr_head_sha`; only the Agent can push to its fork. Everything after that is
+  the same as for a PR.
 - `build-pr` checks out that SHA from the fork with
   `persist-credentials: false`, has no Azure login, no secrets, no
   `id-token` and only `contents: read`, and builds wheels with
