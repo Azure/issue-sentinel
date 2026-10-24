@@ -230,8 +230,22 @@ def vm_up(spec, *, run, az, group, log_dir, password):
         "--public-ip-address", "", "--nsg", "", "--only-show-errors", "-o", "none",
     ], Path(log_dir) / "vm-create", timeout=40 * 60)
     if result["exit_code"] != 0:
-        return "creating the environment VM failed"
+        code = arm_error_code(result["stderr"])
+        return "creating the environment VM failed" + (f" ({code})" if code else "")
     return {"kind": "vm", "group": group, "name": VM_NAME}
+
+
+_ARM_CODE = re.compile(r"\(([A-Z][A-Za-z0-9.]{2,60})\)|\b(?:Error)?Code:\s*([A-Z][A-Za-z0-9.]{2,60})\b")
+
+
+def arm_error_code(stderr_path):
+    """The first ARM error code in az's stderr (a bare identifier, never message text)."""
+    try:
+        text = Path(stderr_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = _ARM_CODE.search(text)
+    return (match.group(1) or match.group(2)) if match else None
 
 
 def guest_script(config):
