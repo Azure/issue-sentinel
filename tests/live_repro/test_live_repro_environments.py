@@ -204,6 +204,23 @@ def test_vm_create_has_no_public_ip_nsg_or_identity(tmp_path):
     assert state == {"kind": "vm", "group": "xea-repro-x", "name": "xeavm"}
 
 
+def test_vm_create_failure_reports_only_the_arm_code(tmp_path):
+    class Failing(FakeRun):
+        def __call__(self, argv, log_stem, **kwargs):
+            result = super().__call__(argv, log_stem, **kwargs)
+            Path(result["stderr"]).write_text(
+                "ERROR: (SkuNotAvailable) The requested size for resource "
+                "'/subscriptions/0000/xeavm' is currently not available\nCode: SkuNotAvailable\n")
+            return result
+
+    spec = _valid(_local_spec(environment="windows-11"))
+    state = repro_env.vm_up(spec, run=Failing(tmp_path, codes=[1]), az="az",
+                            group="g", log_dir=tmp_path, password="x")
+    assert state == "creating the environment VM failed (SkuNotAvailable)"
+    (tmp_path / "e.err").write_text("ERROR: something odd\n")
+    assert repro_env.arm_error_code(tmp_path / "e.err") is None
+
+
 def test_guest_script_carries_only_encoded_config():
     config = {"action": "step", "arguments": "'; Remove-Item C:\\ -Recurse #"}
     text = repro_env.guest_script(config)
