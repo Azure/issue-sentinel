@@ -189,38 +189,70 @@ def test_container_install_script_is_valid_posix_sh():
                         str(repro_env.CONTAINER_INSTALL)], check=True)
 
 
+def _usage(**free):
+    items = [{"name": {"value": "cores"}, "limit": 100, "currentValue": 0}]
+    for family, cores in free.items():
+        items.append({"name": {"value": family}, "limit": cores, "currentValue": 0})
+    return json.dumps(items)
+
+
+VM_PW = "Xx-" + "1" * 12
+
+
 def test_vm_create_has_no_public_ip_nsg_or_identity(tmp_path):
-    run = FakeRun(tmp_path)
+    usage = _usage(standardDSv5Family=10)
+    run = FakeRun(tmp_path, outputs=[usage] * len(repro_env.VM_LOCATIONS))
     spec = _valid(_local_spec(environment="windows-11"))
     state = repro_env.vm_up(spec, run=run, az="az", group="xea-repro-x",
-                            log_dir=tmp_path, password="Xrsecret9!a")
-    argv = run.calls[0]
+                            log_dir=tmp_path, password=VM_PW)
+    argv = next(c for c in run.calls if c[1:3] == ["vm", "create"])
     assert argv[argv.index("--public-ip-address") + 1] == ""
     assert argv[argv.index("--nsg") + 1] == ""
     assert argv[argv.index("--image") + 1].startswith("MicrosoftWindowsDesktop:windows-11:")
     assert argv[argv.index("--size") + 1] == "Standard_D2s_v5"
+    assert argv[argv.index("--location") + 1] == "westus3"
     for forbidden in ("--assign-identity", "--scope", "--role", "--custom-data"):
         assert forbidden not in argv
     assert state == {"kind": "vm", "group": "xea-repro-x", "name": "xeavm"}
 
 
-def test_vm_create_failure_reports_only_the_arm_code(tmp_path):
+def test_vm_placement_skips_sizes_and_regions_without_quota(tmp_path):
+    outputs = [_usage(standardDSv5Family=0, standardBSFamily=1),
+               _usage(standardDSv5Family=0, standardDASv5Family=4)]
+    run = FakeRun(tmp_path, outputs=outputs + [""] * 10)
+    spec = _valid(_local_spec(environment="windows-11"))
+    placements = repro_env.vm_placement(spec, run=run, az="az", log_dir=tmp_path)
+    assert placements == [("eastus2", "Standard_D2as_v5")]
+    assert run.calls[0][1:5] == ["vm", "list-usage", "--location", "westus3"]
+
+
+def test_vm_create_reports_no_quota(tmp_path):
+    run = FakeRun(tmp_path, outputs=[_usage()] * 10)
+    spec = _valid(_local_spec(environment="windows-11"))
+    state = repro_env.vm_up(spec, run=run, az="az", group="g", log_dir=tmp_path, password=VM_PW)
+    assert state == "creating the environment VM failed (no region has free vCPU quota)"
+    assert not [c for c in run.calls if c[1:3] == ["vm", "create"]]
+
+
+def test_vm_create_failure_reports_only_the_arm_codes(tmp_path):
     class Failing(FakeRun):
         def __call__(self, argv, log_stem, **kwargs):
             result = super().__call__(argv, log_stem, **kwargs)
-            Path(result["stderr"]).write_text(
-                "ERROR: (InvalidTemplateDeployment) The template deployment is not valid\n"
-                "Code: InvalidTemplateDeployment\nException Details:\t(SkuNotAvailable) The "
-                "requested size for resource '/subscriptions/0000/xeavm' is not available\n"
-                "\tCode: SkuNotAvailable\n")
+            if argv[1:3] == ["vm", "create"]:
+                Path(result["stderr"]).write_text(
+                    "ERROR: (InvalidTemplateDeployment) The template deployment is not valid\n"
+                    "Code: InvalidTemplateDeployment\nException Details:\t(QuotaExceeded) "
+                    "Operation could not be completed (Minimum) New Limit Required 2 for "
+                    "'/subscriptions/0000/xeavm'\n\tCode: QuotaExceeded\n")
+                result["exit_code"] = 1
             return result
 
     spec = _valid(_local_spec(environment="windows-11"))
-    state = repro_env.vm_up(spec, run=Failing(tmp_path, codes=[1]), az="az",
-                            group="g", log_dir=tmp_path, password="x")
+    run = Failing(tmp_path, outputs=[_usage(standardDSv5Family=4)] + [""] * 10)
+    state = repro_env.vm_up(spec, run=run, az="az", group="g", log_dir=tmp_path, password=VM_PW)
     assert state == ("creating the environment VM failed "
-                     "(InvalidTemplateDeployment, SkuNotAvailable)")
-    (tmp_path / "e.err").write_text("ERROR: something odd\n")
+                     "(InvalidTemplateDeployment, QuotaExceeded)")
+    (tmp_path / "e.err").write_text("ERROR: something odd (Minimum)\n")
     assert repro_env.arm_error_code(tmp_path / "e.err") is None
 
 

@@ -68,6 +68,8 @@ Paths below are relative to the repository root.
   uid. `vm` kinds (Windows 10 and 11 client images) run in the
   `reproduce-vm` job, which creates a VM in the run's resource group with no
   identity, public IP or NSG and drives it only through `az vm run-command`.
+  It picks the first size and region with free vCPU quota (`az vm list-usage`),
+  starting with the spec's region.
   VM specs must set `"azure": false`, so no credential ever reaches the
   guest. PR code reaches the VM as a codeload zip of the verified head sha.
   Run Command output is capped at 4 KB, so the guest matches the spec's
