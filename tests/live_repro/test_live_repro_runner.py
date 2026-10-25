@@ -941,3 +941,11 @@ def test_shell_steps_run_with_the_cli_on_path_and_source_dir(tmp_path):
     out = Path(step["stdout"]).read_text()
     assert f"src={tmp_path / 'src'}" in out
     assert step["command"].startswith("bash: az echo")
+
+
+def test_windows_venv_az_matches_the_msi_bash_wrapper(tmp_path):
+    path = repro_runner.write_git_bash_az(tmp_path)
+    text = path.read_bytes().decode()
+    assert "\r" not in text and "execl" not in text
+    assert text.startswith("#!/usr/bin/env bash\n")
+    assert 'exec "$(dirname "${BASH_SOURCE[0]}")/python.exe" -m azure.cli "$@"' in text

@@ -394,6 +394,21 @@ def venv_az():
     return (venv_bin() / "az").resolve()
 
 
+# pip's extensionless `az` re-executes Python with os.execl, which on Windows
+# spawns a detached child and returns at once, so Git Bash sees no output.
+# The MSI ships this bash wrapper in wbin instead; venv installs get the same.
+_GIT_BASH_AZ = (
+    "#!/usr/bin/env bash\n"
+    'AZ_INSTALLER=PIP exec "$(dirname "${BASH_SOURCE[0]}")/python.exe" -m azure.cli "$@"\n'
+)
+
+
+def write_git_bash_az(directory):
+    path = Path(directory) / "az"
+    path.write_bytes(_GIT_BASH_AZ.encode())
+    return path
+
+
 def az_command(install=None):
     """argv prefix that runs the installed CLI, or None when it is missing."""
     install = install if install is not None else (_read_json(INSTALL_FILE) or {})
@@ -702,6 +717,8 @@ def cmd_install(args):
             })
             print(f"::error::Installing the {version} CLI failed.")
             return 1
+    if WINDOWS and not msi:
+        write_git_bash_az(venv_bin())
     info = {"version": version, "error": None, "cli_version": None,
             "extension_version": None, "source_sha": None, **(msi or {})}
     if version == "pr":
