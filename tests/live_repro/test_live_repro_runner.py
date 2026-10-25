@@ -998,3 +998,39 @@ def test_windows_children_keep_the_runner_az_login(monkeypatch):
     assert "SECRET" not in child
     monkeypatch.setattr(repro_runner, "WINDOWS", False)
     assert "AZURE_CONFIG_DIR" not in repro_runner.child_env(env=env)
+
+
+def test_a_missing_resource_provider_is_registered_and_the_step_runs_again(tmp_path):
+    spec = repro_runner.verify_from_env(_env(_dispatch()))
+    values, resolved = repro_runner.prepare_run(
+        spec, resource_group="rg", run_id="1-latest", subscription_id=SUB,
+        work_dir=tmp_path / "work",
+    )
+    refused = tmp_path / "refused.err"
+    refused.write_text("ERROR: (MissingSubscriptionRegistration) The subscription is not "
+                       "registered to use namespace 'Microsoft.Sql'. See https://aka.ms/x\n")
+    empty = tmp_path / "empty"
+    empty.write_text("")
+    calls, registered = [], []
+
+    def launch(phase, index, step, remaining):
+        calls.append(phase)
+        first = phase == "setup" and calls.count("setup") == 1
+        return {"exit_code": 1 if first else 0, "timed_out": False, "duration_seconds": 0.1,
+                "stdout": str(empty), "stderr": str(refused if first else empty)}
+
+    raw = repro_runner.run_steps(
+        spec, resolved, values, launch=launch, display=repro_runner.display_step,
+        log=lambda _m: None, register=lambda ns, _r: registered.append(ns) or True,
+    )
+    assert registered == ["Microsoft.Sql"]
+    assert calls == ["setup", "setup", "repro"]
+    assert raw["steps"][0]["expect_met"] is True and raw["status"] == "completed"
+
+
+def test_missing_provider_only_reads_a_namespace():
+    assert repro_runner.missing_provider("Code: MissingSubscriptionRegistration\n"
+                                         "namespace 'Microsoft.Web'.") == "Microsoft.Web"
+    assert repro_runner.missing_provider("namespace 'Microsoft.Web'") is None
+    assert repro_runner.missing_provider(
+        "MissingSubscriptionRegistration namespace 'x; rm -rf /'") is None

@@ -127,6 +127,8 @@ as untrusted:
 - One resource group per version, `xea-repro-<repo>-<issue>-<run>-<version>`,
   tagged `expiresAt` (now + `REPRO_RESOURCE_GROUP_TTL_HOURS`) and deleted with
   `if: always()`; the janitor runs every 3 hours and covers both workflows.
+- A step refused with `MissingSubscriptionRegistration` registers that resource
+  provider on the subscription once and runs again.
 
 ## Tests
 
