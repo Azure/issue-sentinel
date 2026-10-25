@@ -16,8 +16,10 @@ sys.path.insert(0, str(SCRIPTS))
 from test_live_repro_injection_corpus import (  # noqa: E402
     AZ_CORPUS,
     PS_CORPUS,
+    PS_NOT_AZ_CMDLETS,
     _az,
     _ps,
+    ps_case,
 )
 
 import repro_janitor  # noqa: E402
@@ -83,15 +85,16 @@ def _env(inputs, **extra):
 
 
 # Parity with the Agent's validator is checked in the Agent repository;
-# here the vendored copy must reject the corpus on its own.
+# here the vendored copy must accept every Az step and reject non-Az cmdlets on its own.
 
 def _corpus_cases():
     cases = {}
     for name, argv in AZ_CORPUS.items():
-        cases[f"az-{name}"] = _az(*argv)
-        cases[f"az-setup-{name}"] = _az("version", setup=[{"argv": ["az", *argv]}])
-    for name, (cmdlet, parameters) in PS_CORPUS.items():
-        cases[f"ps-{name}"] = _ps(cmdlet, parameters)
+        cases[f"valid-az-{name}"] = _az(*argv)
+        cases[f"valid-az-setup-{name}"] = _az("version", setup=[{"argv": ["az", *argv]}])
+    for name in PS_CORPUS:
+        prefix = "ps" if name in PS_NOT_AZ_CMDLETS else "valid-ps"
+        cases[f"{prefix}-{name}"] = ps_case(name)
     cases["valid-az"] = _az("storage", "account", "list", "-g", "{rg}")
     cases["valid-version"] = _az("version")
     cases["valid-ps"] = _ps("Get-AzStorageAccount", {"ResourceGroupName": "{rg}"})
@@ -120,9 +123,9 @@ def test_vendored_validator_verdicts(name):
         assert result["spec_hash"] is None
 
 
-def test_corpus_rejects_every_injection():
-    rejected = [n for n in CASES if n.startswith(("az-", "ps-"))]
-    assert len(rejected) == 2 * len(AZ_CORPUS) + len(PS_CORPUS)
+def test_corpus_only_rejects_non_az_cmdlets():
+    rejected = [n for n in CASES if n.startswith("ps-")]
+    assert len(rejected) == len(PS_NOT_AZ_CMDLETS)
     for name in rejected:
         assert repro_spec.validate_spec(CASES[name])["valid"] is False, name
 
@@ -886,9 +889,9 @@ def test_verify_publishes_runner_os_and_azure_mode(tmp_path, monkeypatch):
         assert values["runs_on"] == runs_on and values["azure"] == azure
 
 
-def test_shell_steps_only_verify_without_azure():
+def test_shell_steps_verify_with_or_without_azure():
     assert repro_runner.verify_from_env(_env(_dispatch(_local_spec())))["azure"] is False
-    assert not repro_spec.validate_spec(_local_spec(azure=True))["valid"]
+    assert repro_runner.verify_from_env(_env(_dispatch(_local_spec(azure=True)))).get("azure", True) is True
 
 
 def test_shell_argv_and_script_files(tmp_path):

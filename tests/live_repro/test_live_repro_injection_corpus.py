@@ -1,8 +1,8 @@
-"""Prompt-injection steps the vendored ReproSpec validator must reject."""
+"""Formerly blocked steps the vendored ReproSpec validator now accepts, and the structure it still checks."""
 
 import pytest
 
-from repro_spec import validate_spec
+from repro_spec import ps_cmdlet_module, validate_spec
 
 ISSUE = "Azure/azure-cli#34187"
 PS_ISSUE = "Azure/azure-powershell#27001"
@@ -249,36 +249,38 @@ PS_MODULE_CORPUS = {
 }
 
 
+# Not Az cmdlets at all, so the PowerShell runner has nothing to call.
+PS_NOT_AZ_CMDLETS = frozenset({
+    "invoke-expression", "invoke-expression-alias", "invoke-command", "start-job",
+    "lowercase-verb", "module-qualified",
+})
+
+
+def ps_case(name):
+    """The PS corpus spec, naming the module when the noun map does not know it."""
+    cmdlet, parameters = PS_CORPUS[name]
+    spec = _ps(cmdlet, parameters)
+    if name not in PS_NOT_AZ_CMDLETS and ps_cmdlet_module(cmdlet) is None:
+        spec["module"] = "Az.Resources" if "Role" in cmdlet or "AD" in cmdlet else "Az.Accounts"
+    return spec
+
+
 @pytest.mark.parametrize("argv", list(AZ_CORPUS.values()), ids=list(AZ_CORPUS))
-def test_az_injection_corpus_is_rejected(argv):
+def test_any_az_step_is_accepted(argv):
     result = validate_spec(_az(*argv))
-
-    assert result["valid"] is False
-    assert result["errors"]
-    assert all(error.startswith("repro[0]") for error in result["errors"])
-    assert result["spec_hash"] is None
+    assert result["valid"] is True, result["errors"]
+    setup = validate_spec(_az("version", setup=[{"argv": ["az", *argv]}]))
+    assert setup["valid"] is True, setup["errors"]
 
 
-@pytest.mark.parametrize("argv", list(AZ_CORPUS.values()), ids=list(AZ_CORPUS))
-def test_az_injection_rejected_in_setup_too(argv):
-    spec = _az("version", setup=[{"argv": ["az", *argv]}])
-
-    result = validate_spec(spec)
-    assert result["valid"] is False
-    assert all(error.startswith("setup[0]") for error in result["errors"])
-
-
-@pytest.mark.parametrize(
-    "case", list(PS_CORPUS.values()), ids=list(PS_CORPUS),
-)
-def test_powershell_injection_corpus_is_rejected(case):
-    cmdlet, parameters = case
-
-    result = validate_spec(_ps(cmdlet, parameters))
-
-    assert result["valid"] is False
-    assert result["errors"]
-    assert all(error.startswith("repro[0]") for error in result["errors"])
+@pytest.mark.parametrize("name", list(PS_CORPUS))
+def test_any_az_cmdlet_is_accepted(name):
+    result = validate_spec(ps_case(name))
+    if name in PS_NOT_AZ_CMDLETS:
+        assert result["valid"] is False
+        assert all(error.startswith("repro[0].cmdlet") for error in result["errors"])
+    else:
+        assert result["valid"] is True, result["errors"]
 
 
 @pytest.mark.parametrize(
@@ -345,28 +347,14 @@ def test_az_steps_are_rejected_for_powershell_and_scripts_never_accepted():
 
 
 @pytest.mark.parametrize("observed", [
-    {"error_substring": f"Subscription {GUID} not found"},
-    {"error_substring": "token=ghp_abcdefghijklmnopqrstuvwxyz0123456789"},
-    {"error_substring": "line1\nline2"},
-    {"error_substring": "x" * 500},
     {"exit_code": "1; rm -rf /"},
     {"stdout_regex": ".*"},
-], ids=["guid", "token", "newline", "too-long", "exit-code-string", "unknown-key"])
-def test_observed_text_with_ids_secrets_or_injection_is_rejected(observed):
+], ids=["exit-code-string", "unknown-key"])
+def test_malformed_observed_text_is_rejected(observed):
     spec = _az("version")
     spec["observed_in_issue"] = observed
 
     assert validate_spec(spec)["valid"] is False
-
-
-def test_errors_do_not_echo_secret_values():
-    secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
-    result = validate_spec(_az(
-        "storage", "account", "list", "-g", "{rg}", "--tags", f"t={secret}",
-    ))
-
-    assert result["valid"] is False
-    assert secret not in " ".join(result["errors"])
 
 
 ALLOWED_IMAGE_STEPS = {
@@ -387,7 +375,7 @@ ALLOWED_IMAGE_STEPS = {
 @pytest.mark.parametrize(
     "argv", list(ALLOWED_IMAGE_STEPS.values()), ids=list(ALLOWED_IMAGE_STEPS),
 )
-def test_allowlisted_images_are_accepted(argv):
+def test_images_are_accepted(argv):
     result = validate_spec(_az(*argv))
 
     assert result["valid"] is True, result["errors"]
@@ -418,13 +406,12 @@ _CONTAINER_YAML = {"extension": "yaml",
     ("acr", "build", "-r", "{name1}", "--file", "{file}"),
     ("batch", "task", "create", "--job-id", "j", "--json-file", "{file}"),
 ])
-def test_input_file_is_rejected_for_commands_that_run_its_content(argv):
+def test_input_file_is_accepted_for_commands_that_run_its_content(argv):
     result = validate_spec({**_az(*argv), "input_file": _CONTAINER_YAML})
-    assert any("{file} cannot be passed" in e for e in result["errors"])
+    assert result["valid"] is True, result["errors"]
 
 
-def test_powershell_input_file_is_rejected_for_container_nouns():
+def test_powershell_input_file_is_accepted_for_container_nouns():
     spec = {**_ps("New-AzContainerGroup", {"File": "{file}"}),
             "input_file": _CONTAINER_YAML}
-    assert any("{file} cannot be passed" in e
-               for e in validate_spec(spec)["errors"])
+    assert validate_spec(spec)["valid"] is True

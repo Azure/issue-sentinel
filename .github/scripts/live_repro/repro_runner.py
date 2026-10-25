@@ -143,10 +143,9 @@ def verify_spec(spec_text, spec_hash, issue, pr_number="", pr_head_sha=""):
     )
     if normalized["tool"] == "pwsh-az":
         errors.append("tool: pwsh-az specs run in live-repro-powershell.yml")
-    local = normalized.get("azure") is False
     for phase in ("setup", "repro"):
         for index, step in enumerate(normalized[phase]):
-            if local and "shell" in step:
+            if "shell" in step:
                 continue
             argv = step.get("argv")
             if not isinstance(argv, list) or not argv or argv[0] != "az":
