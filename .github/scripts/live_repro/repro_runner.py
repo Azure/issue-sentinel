@@ -73,7 +73,9 @@ _RUN_KEY = re.compile(r"[^A-Za-z0-9-]")
 # Child processes inherit only these; GitHub and OIDC request tokens are dropped.
 _CHILD_ENV_KEYS = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "USER")
 # Windows processes (Python, msiexec, Git Bash, pwsh) fail without these.
+# The Windows runner image keeps az's login in AZURE_CONFIG_DIR (C:\azureCli).
 _WINDOWS_ENV_KEYS = (
+    "AZURE_CONFIG_DIR",
     "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP",
     "USERPROFILE", "USERNAME", "APPDATA", "LOCALAPPDATA", "PROGRAMFILES",
     "PROGRAMFILES(X86)", "PROGRAMW6432", "PROGRAMDATA", "COMMONPROGRAMFILES",
