@@ -555,6 +555,26 @@ def test_rg_delete_skips_when_rg_create_never_ran(tmp_path, monkeypatch, capsys)
     assert calls == [["group", "create"], ["group", "exists"]]
 
 
+
+def test_rg_create_failure_prints_the_arm_code_only(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    for key, value in _env(_dispatch(), GITHUB_RUN_ID="9", REPRO_VERSION="latest").items():
+        monkeypatch.setenv(key, value)
+    stderr = tmp_path / "group-create.err"
+    stderr.write_text("ERROR: (AuthorizationFailed) The client 'secret-id' does not have access\n"
+                      "Code: AuthorizationFailed\nMessage: secret text\n")
+
+    def fake_run_quiet(argv, stem, **kwargs):
+        return {"exit_code": 1, "timed_out": False, "stderr": str(stderr)}
+
+    monkeypatch.setattr(repro_runner, "run_quiet", fake_run_quiet)
+    monkeypatch.setattr(repro_runner, "system_az", lambda: "az")
+    assert repro_runner.main(["rg-create"]) == 1
+    out = capsys.readouterr().out
+    assert "::error::Resource group create failed (AuthorizationFailed)." in out
+    assert "secret" not in out
+
+
 FAKE_AZ = r'''
 import json, os, sys, time
 args = sys.argv[1:]

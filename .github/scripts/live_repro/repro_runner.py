@@ -887,7 +887,11 @@ def cmd_rg_create(args):
         "--only-show-errors", "-o", "none",
     ], RAW_DIR / "lifecycle" / "group-create", timeout=LIFECYCLE_TIMEOUT_SECONDS)
     print(f"Resource group create: exit {result['exit_code']}.")
-    return 0 if result["exit_code"] == 0 else 1
+    if result["exit_code"] == 0:
+        return 0
+    code = repro_env.arm_error_code(result["stderr"]) or ("timeout" if result.get("timed_out") else "unknown")
+    print(f"::error::Resource group create failed ({code}).")
+    return 1
 
 
 def cmd_rg_delete(args):
