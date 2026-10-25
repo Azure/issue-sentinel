@@ -891,6 +891,14 @@ def cmd_rg_create(args):
         return 0
     code = repro_env.arm_error_code(result["stderr"]) or ("timeout" if result.get("timed_out") else "unknown")
     print(f"::error::Resource group create failed ({code}).")
+    if code == "unknown":
+        import repro_sanitize  # imports this module
+        excerpt = repro_sanitize.error_excerpt(
+            repro_sanitize._tail(result["stderr"]),
+            repro_sanitize._Scrubber(repro_sanitize.env_known()),
+        )
+        for line in (excerpt or "").splitlines():
+            print(f"  {line}")
     return 1
 
 
