@@ -179,13 +179,10 @@ jobs:
 
       - name: Checkout CLI source (dev)
         if: matrix.version == 'dev'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          repository: ${{ needs.prepare.outputs.source_repo }}
-          ref: ${{ needs.prepare.outputs.dev_ref }}
-          path: repro/src
-          fetch-depth: 1
-          persist-credentials: false
+        env:
+          SRC_REPO: ${{ needs.prepare.outputs.source_repo }}
+          SRC_REF: ${{ needs.prepare.outputs.dev_ref }}
+        run: python "$RUNNER_SCRIPTS/repro_runner.py" checkout-source
 
       - name: Download PR head wheels (built without credentials)
         if: matrix.version == 'pr'
@@ -293,13 +290,10 @@ jobs:
 
       - name: Checkout CLI source (dev)
         if: matrix.version == 'dev'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          repository: ${{ needs.prepare.outputs.source_repo }}
-          ref: ${{ needs.prepare.outputs.dev_ref }}
-          path: repro/src
-          fetch-depth: 1
-          persist-credentials: false
+        env:
+          SRC_REPO: ${{ needs.prepare.outputs.source_repo }}
+          SRC_REF: ${{ needs.prepare.outputs.dev_ref }}
+        run: python "$RUNNER_SCRIPTS/repro_runner.py" checkout-source
 
       - name: Download PR head wheels (built without credentials)
         if: matrix.version == 'pr'
@@ -321,13 +315,10 @@ jobs:
       - name: Checkout the matching source for scripts (REPRO_SOURCE_DIR)
         if: matrix.version != 'dev' && steps.install.outputs.source_ref != ''
         continue-on-error: true   # scripts that need it fail visibly in the result
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          repository: ${{ matrix.version == 'pr' && needs.prepare.outputs.pr_repo || needs.prepare.outputs.source_repo }}
-          ref: ${{ steps.install.outputs.source_ref }}
-          path: repro/src
-          fetch-depth: 1
-          persist-credentials: false
+        env:
+          SRC_REPO: ${{ matrix.version == 'pr' && needs.prepare.outputs.pr_repo || needs.prepare.outputs.source_repo }}
+          SRC_REF: ${{ steps.install.outputs.source_ref }}
+        run: python "$RUNNER_SCRIPTS/repro_runner.py" checkout-source
 
       - name: Run ReproSpec steps (no Azure sign in, output to files)
         timeout-minutes: ${{ fromJSON(needs.prepare.outputs.step_timeout_minutes) }}

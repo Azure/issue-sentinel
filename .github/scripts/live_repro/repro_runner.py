@@ -1315,6 +1315,37 @@ def cmd_env_down(args):
     return 0
 
 
+_SOURCE_REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$")
+_SOURCE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,200}$")
+
+
+def cmd_checkout_source(args):
+    """Fetch SRC_REPO at SRC_REF into repro/src with plain git.
+
+    actions/checkout cannot be used here: its credential cleanup runs
+    `git submodule foreach`, which fails on azure-cli-extensions' stray
+    `projects` gitlink (no .gitmodules entry)."""
+    repo = os.environ.get("SRC_REPO", "")
+    ref = os.environ.get("SRC_REF", "")
+    if not _SOURCE_REPO.match(repo) or not _SOURCE_REF.match(ref) or ".." in ref:
+        print("::error::Source repository or ref is not valid.")
+        return 1
+    log_dir = RAW_DIR / "host"
+    steps = (
+        (["git", "init", "-q", SOURCE_DIR], "src-init", 60),
+        (["git", "-C", SOURCE_DIR, "fetch", "-q", "--depth", "1", "--no-recurse-submodules",
+          f"https://github.com/{repo}.git", ref], "src-fetch", 900),
+        (["git", "-C", SOURCE_DIR, "checkout", "-q", "FETCH_HEAD"], "src-checkout", 900),
+    )
+    for argv, stem, timeout in steps:
+        result = run_quiet(argv, log_dir / stem, timeout=timeout)
+        if result["exit_code"] != 0:
+            print(f"::error::Source {stem} failed (exit {result['exit_code']}).")
+            return 1
+    print(f"Checked out {repo} at {ref}.")
+    return 0
+
+
 def cmd_host_setup(args):
     """Windows only: let git check out the CLI's long test recording paths."""
     if WINDOWS:
@@ -1328,6 +1359,7 @@ def cmd_host_setup(args):
 
 COMMANDS = {
     "host-setup": cmd_host_setup,
+    "checkout-source": cmd_checkout_source,
     "verify": cmd_verify,
     "build": cmd_build,
     "install": cmd_install,

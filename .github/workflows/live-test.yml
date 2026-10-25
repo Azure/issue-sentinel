@@ -832,15 +832,22 @@ jobs:
           name: live-test-pr-${{ inputs.pr_number }}
           path: artifact
 
+      # Plain git, not actions/checkout: its credential cleanup runs `git submodule
+      # foreach`, which fails on azure-cli-extensions' stray `projects` gitlink.
       - name: Checkout exact agent PR head
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ steps.verify.outputs.head_repo }}
-          ref: ${{ steps.verify.outputs.head_sha }}
-          token: ${{ steps.kv.outputs.publish_token }}
-          persist-credentials: false
-          fetch-depth: 0
-          path: pr-head
+        env:
+          HEAD_REPO: ${{ steps.verify.outputs.head_repo }}
+          HEAD_SHA: ${{ steps.verify.outputs.head_sha }}
+          PUBLISH_TOKEN: ${{ steps.kv.outputs.publish_token }}
+        run: |
+          set -euo pipefail
+          git init -q pr-head
+          cd pr-head
+          git remote add origin "https://github.com/${HEAD_REPO}.git"
+          auth=$(printf 'x-access-token:%s' "$PUBLISH_TOKEN" | base64 -w0)
+          git -c http.extraheader="AUTHORIZATION: basic ${auth}" \
+            fetch -q --no-recurse-submodules origin "$HEAD_SHA"
+          git checkout -q FETCH_HEAD
 
       - name: Validate and stage recording files
         run: |

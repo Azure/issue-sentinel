@@ -576,6 +576,50 @@ def test_rg_create_failure_prints_the_arm_code_only(tmp_path, monkeypatch, capsy
 
 
 
+def test_checkout_source_fetches_with_plain_git_and_no_submodules(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SRC_REPO", "Azure/azure-cli-extensions")
+    monkeypatch.setenv("SRC_REF", "main")
+    calls = []
+    monkeypatch.setattr(repro_runner, "run_quiet", lambda argv, stem, **kw: calls.append(
+        [str(a) for a in argv]) or {"exit_code": 0, "timed_out": False})
+    assert repro_runner.main(["checkout-source"]) == 0
+    src = str(repro_runner.SOURCE_DIR)
+    assert calls == [
+        ["git", "init", "-q", src],
+        ["git", "-C", src, "fetch", "-q", "--depth", "1", "--no-recurse-submodules",
+         "https://github.com/Azure/azure-cli-extensions.git", "main"],
+        ["git", "-C", src, "checkout", "-q", "FETCH_HEAD"],
+    ]
+    assert "Checked out Azure/azure-cli-extensions at main." in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("repo,ref", [
+    ("Azure/azure-cli", "--upload-pack=x"),
+    ("Azure/azure-cli", "dev/../x"),
+    ("Azure/azure-cli;rm", "dev"),
+    ("", "dev"),
+    ("Azure/azure-cli", ""),
+])
+def test_checkout_source_rejects_bad_inputs_before_running_git(tmp_path, monkeypatch, capsys, repo, ref):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SRC_REPO", repo)
+    monkeypatch.setenv("SRC_REF", ref)
+    monkeypatch.setattr(repro_runner, "run_quiet", lambda *a, **k: pytest.fail("git ran"))
+    assert repro_runner.main(["checkout-source"]) == 1
+    assert "::error::Source repository or ref is not valid." in capsys.readouterr().out
+
+
+def test_checkout_source_reports_the_failing_git_step(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SRC_REPO", "Azure/azure-cli")
+    monkeypatch.setenv("SRC_REF", "dev")
+    monkeypatch.setattr(repro_runner, "run_quiet", lambda argv, stem, **kw: {
+        "exit_code": 128 if Path(stem).name == "src-fetch" else 0, "timed_out": False})
+    assert repro_runner.main(["checkout-source"]) == 1
+    assert "::error::Source src-fetch failed (exit 128)." in capsys.readouterr().out
+
+
 def test_rg_create_failure_without_a_code_prints_a_redacted_excerpt(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     for key, value in _env(_dispatch(), GITHUB_RUN_ID="9", REPRO_VERSION="latest").items():
