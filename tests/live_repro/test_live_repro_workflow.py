@@ -346,13 +346,11 @@ def test_build_pr_job_has_no_azure_credentials(repro):
     assert "azure/login" not in text
     assert "id-token" not in text
     checkout = _step(repro, "build-pr", "Checkout the verified PR head")
-    assert checkout["with"] == {
-        "repository": "${{ needs.prepare.outputs.pr_repo }}",
-        "ref": "${{ needs.prepare.outputs.pr_ref }}",
-        "path": "repro/src",
-        "fetch-depth": 1,
-        "persist-credentials": False,
+    assert checkout["env"] == {
+        "SRC_REPO": "${{ needs.prepare.outputs.pr_repo }}",
+        "SRC_REF": "${{ needs.prepare.outputs.pr_ref }}",
     }
+    assert checkout["run"].endswith('repro_runner.py" checkout-source')
     assert _step(repro, "build-pr", "Build wheels")["run"].endswith(
         'repro_runner.py" build'
     )

@@ -120,13 +120,10 @@ jobs:
           python-version: "3.12"
 
       - name: Checkout the verified PR head (Agent fork)
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          repository: ${{ needs.prepare.outputs.pr_repo }}
-          ref: ${{ needs.prepare.outputs.pr_ref }}
-          path: repro/src
-          fetch-depth: 1
-          persist-credentials: false
+        env:
+          SRC_REPO: ${{ needs.prepare.outputs.pr_repo }}
+          SRC_REF: ${{ needs.prepare.outputs.pr_ref }}
+        run: python3 "$RUNNER_SCRIPTS/repro_runner.py" checkout-source
 
       - name: Build wheels (output to files)
         timeout-minutes: 25
