@@ -575,6 +575,22 @@ def test_rg_create_failure_prints_the_arm_code_only(tmp_path, monkeypatch, capsy
     assert "secret" not in out
 
 
+
+def test_rg_create_failure_without_a_code_prints_a_redacted_excerpt(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    for key, value in _env(_dispatch(), GITHUB_RUN_ID="9", REPRO_VERSION="latest").items():
+        monkeypatch.setenv(key, value)
+    stderr = tmp_path / "group-create.err"
+    stderr.write_text("ERROR: Please run 'az login' for 3f2b9c1e-7a4d-4e8b-9c2a-1d5e6f7a8b9c.\n")
+    monkeypatch.setattr(repro_runner, "run_quiet", lambda argv, stem, **kw: {
+        "exit_code": 1, "timed_out": False, "stderr": str(stderr)})
+    monkeypatch.setattr(repro_runner, "system_az", lambda: "az")
+    assert repro_runner.main(["rg-create"]) == 1
+    out = capsys.readouterr().out
+    assert "(unknown)" in out and "Please run 'az login'" in out
+    assert "3f2b9c1e" not in out
+
+
 FAKE_AZ = r'''
 import json, os, sys, time
 args = sys.argv[1:]
