@@ -1128,14 +1128,40 @@ def _vm_launch(spec, environment, raw_dir, work_dir):
     return launch
 
 
+_MISSING_PROVIDER = re.compile(
+    r"MissingSubscriptionRegistration.*?namespace '([A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z0-9]+)+)'",
+    re.S,
+)
+
+
+def missing_provider(stderr_text):
+    """The resource provider namespace a step needs registered, or None."""
+    match = _MISSING_PROVIDER.search(stderr_text or "")
+    return match.group(1) if match else None
+
+
+def register_provider(namespace, remaining):
+    """Register a resource provider on the repro subscription and wait for it."""
+    result = run_quiet(
+        [system_az(), "provider", "register", "--namespace", namespace, "--wait",
+         "--only-show-errors", "-o", "none"],
+        RAW_DIR / "lifecycle" / f"register-{namespace}",
+        timeout=max(1, min(remaining, 10 * 60)),
+    )
+    return result["exit_code"] == 0
+
+
 def run_steps(spec, resolved, values, *, launch, display,
-              deadline_seconds=None, log=print):
+              deadline_seconds=None, log=print, register=register_provider):
     """Run resolved steps with launch(phase, index, step, remaining).
 
     Stops at the first setup step that misses its expect, or when time runs out.
+    A step refused because the subscription lacks a resource provider registers
+    it and runs once more.
     """
     budget = deadline_seconds or spec["timeout_minutes"] * 60
     deadline = time.monotonic() + budget
+    registered = set()
     steps = []
     status = "completed"
     for phase in ("setup", "repro"):
@@ -1156,6 +1182,16 @@ def run_steps(spec, resolved, values, *, launch, display,
                 steps.append(entry)
                 continue
             result = dict(launch(phase, index, step, remaining))
+            namespace = None
+            if result.get("exit_code") not in (0, None) and not result.get("timed_out"):
+                namespace = missing_provider(_read_text(result["stderr"]))
+            if namespace and namespace not in registered:
+                registered.add(namespace)
+                ok = register(namespace, deadline - time.monotonic())
+                log(f"Registered resource provider {namespace}: {'ok' if ok else 'failed'}.")
+                remaining = deadline - time.monotonic()
+                if ok and remaining >= 1:
+                    result = dict(launch(phase, index, step, remaining))
             found = result.pop("found", None) or ()
             infra_error = result.pop("infra_error", False)
             entry.update(result)
