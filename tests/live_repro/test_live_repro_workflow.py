@@ -360,11 +360,12 @@ def test_build_pr_job_has_no_azure_credentials(repro):
 
 def test_reproduce_job_never_checks_out_pr_code(repro):
     steps = repro["jobs"]["reproduce"]["steps"]
-    checkouts = [s for s in steps[1:] if s.get("uses", "").startswith("actions/checkout@")]
-    assert len(checkouts) == 1
-    assert checkouts[0]["if"] == "matrix.version == 'dev'"
-    assert checkouts[0]["with"]["repository"] == "${{ needs.prepare.outputs.source_repo }}"
-    assert checkouts[0]["with"]["ref"] == "${{ needs.prepare.outputs.dev_ref }}"
+    assert not [s for s in steps[1:] if s.get("uses", "").startswith("actions/checkout@")]
+    source = _step(repro, "reproduce", "Checkout CLI source (dev)")
+    assert source["if"] == "matrix.version == 'dev'"
+    assert source["env"] == {"SRC_REPO": "${{ needs.prepare.outputs.source_repo }}",
+                             "SRC_REF": "${{ needs.prepare.outputs.dev_ref }}"}
+    assert source["run"].endswith("repro_runner.py\" checkout-source")
     assert "pr_ref" not in str(repro["jobs"]["reproduce"])
     download = _step(repro, "reproduce", "Download PR head wheels")
     assert download["if"] == "matrix.version == 'pr'"
