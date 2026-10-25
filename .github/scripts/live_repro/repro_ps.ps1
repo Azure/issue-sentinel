@@ -76,9 +76,6 @@ function Test-ScalarValue($Value) {
 
 function ConvertTo-ParameterValue($Value, $Metadata) {
     $type = $Metadata.ParameterType
-    foreach ($forbidden in [scriptblock], [scriptblock[]], [pscredential]) {
-        if ($type -eq $forbidden) { Stop-Rejected "parameter -$($Metadata.Name) takes code or credentials" }
-    }
     if ($Value -is [array]) {
         if ($Value.Count -gt 50) { Stop-Rejected "too many values for -$($Metadata.Name)" }
         foreach ($item in $Value) {
@@ -186,9 +183,6 @@ function Invoke-ReproStep($Request) {
     Assert-Module $module $requiredVersion
     $parameters = $Request['parameters']
     if ($parameters -isnot [System.Collections.IDictionary]) { Stop-Rejected 'parameters must be an object' }
-    $denied = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-    foreach ($name in @($Request['denied_parameters'])) { $null = $denied.Add([string] $name) }
-    if ($denied.Count -eq 0) { Stop-Rejected 'denied parameter list is missing' }
 
     try {
         if ($modulePath) {
@@ -220,13 +214,9 @@ function Invoke-ReproStep($Request) {
     $splat = @{}
     foreach ($key in @($parameters.Keys)) {
         if ($key -cnotmatch $ParameterPattern) { Stop-Rejected 'invalid parameter name' }
-        if ($denied.Contains($key)) { Stop-Rejected "-$key is not allowed" }
         # Exact names only; PowerShell would otherwise accept a unique prefix like -DefaultP.
         if (-not $lookup.ContainsKey($key)) { Stop-Rejected "-$key is not a parameter of $cmdlet" }
         $metadata = $lookup[$key]
-        foreach ($name in @($metadata.Name) + @($metadata.Aliases)) {
-            if ($denied.Contains($name)) { Stop-Rejected "-$key is not allowed" }
-        }
         if ($splat.ContainsKey($metadata.Name)) { Stop-Rejected "-$($metadata.Name) is given twice" }
         $splat[$metadata.Name] = ConvertTo-ParameterValue $parameters[$key] $metadata
     }

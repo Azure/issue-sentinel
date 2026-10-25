@@ -12,9 +12,9 @@ Paths below are relative to the repository root.
 | `.github/workflows/live-repro.yml` | `workflow_dispatch` target of `dispatch_reproduction` (inputs `issue`, `spec`, `spec_hash`, `pr_number`, `pr_head_sha`; run name `Live Repro (<issue> @ <spec_hash>[ PR <n> head <sha>])`). |
 | `.github/workflows/live-repro-powershell.yml` | Same inputs and run name for `pwsh-az` specs (Azure/azure-powershell issues; `LIVE_REPRO_POWERSHELL_WORKFLOW`). PR-head re-runs build the module under test in a credential-free `build-pr` job (see below). |
 | `.github/workflows/live-repro-janitor.yml` | Scheduled backstop that deletes expired `xea-repro-*` resource groups. |
-| `.github/scripts/live_repro/repro_runner.py` | Trusted runner: re-validates the spec against `spec_hash`, installs the CLI version, manages the resource group, runs argv steps without a shell (and script steps only in the credential free `reproduce-local` job), writes all output to files. |
+| `.github/scripts/live_repro/repro_runner.py` | Trusted runner: re-validates the spec against `spec_hash`, installs the CLI version, manages the resource group, runs argv steps without a shell and script steps in any job, writes all output to files. |
 | `.github/scripts/live_repro/repro_ps_runner.py` | PowerShell runner: reuses `repro_runner.py`'s verification, step loop and result files; installs `Az.<X>` with `Install-Module -RequiredVersion` (builds it from source for `dev`; imports the verified `build-pr` output for `pr`), signs in with a federated `Connect-AzAccount`. |
-| `.github/scripts/live_repro/repro_ps.ps1` | Trusted pwsh script run with `-File` (never `-Command`): installs modules, signs in, manages the resource group and calls one allowlisted cmdlet by splatting a checked parameter hashtable. |
+| `.github/scripts/live_repro/repro_ps.ps1` | Trusted pwsh script run with `-File` (never `-Command`): installs modules, signs in, manages the resource group and calls one Az cmdlet by splatting a parameter hashtable. |
 | `.github/scripts/live_repro/repro_sanitize.py` | Builds `repro.redacted.json`; the comment above `RESULT_FILE_NAME` documents the result schema the Agent consumes. |
 | `.github/scripts/live_repro/repro_janitor.py` | Janitor logic. |
 | `.github/scripts/live_repro/repro_env.py` | Starts and stops the spec's `environment` (a distro container or a Windows client VM) and runs install and steps inside it. |
@@ -32,6 +32,10 @@ Paths below are relative to the repository root.
   (`github.sha`), never from the dispatch inputs.
 - The spec input must be the canonical JSON of a valid spec whose SHA-256 is
   `spec_hash`; every job re-validates it before running anything.
+- There is no command allowlist or denylist. Any az command, argument,
+  location, host, image, input file, shell script or Az cmdlet and parameter
+  may run, in signed-in jobs too. The validator only checks structure (argv
+  starts with `az`, cmdlets are `Verb-Az<Noun>`, keys and types are valid).
 - Steps run as argv lists in a fresh directory (holding only the input file
   and any empty `workdir_dirs` the spec names) with a minimal environment
   (no GitHub or OIDC request tokens). Output goes to `repro/raw` and never to
@@ -39,14 +43,14 @@ Paths below are relative to the repository root.
 - Sanitizing runs after sign-out. Only `repro.redacted.json` is uploaded:
   `repro-redacted-<version>` per matrix entry and the merged `repro-redacted`
   artifact, which is the one the Agent downloads.
-- PowerShell: the Az module must be allowlisted (`REPRO_PS_NOUN_MODULES`),
+- PowerShell: the Az module comes from `REPRO_PS_NOUN_MODULES` or the
+  spec's `module`,
   modules are installed with `Install-Module -RequiredVersion` (the
   `latest` version is resolved with `Find-Module` first) and sign-in is a
   federated `Connect-AzAccount` with the job's OIDC token (no secret, no
   `azure/login`). Each step is one `pwsh -NoProfile -NonInteractive -File
   repro_ps.ps1` process that resolves the cmdlet with `Get-Command`, accepts
-  only exact parameter names or aliases that are not denied (no prefixes,
-  no `-ScriptBlock`/credential parameters, no common parameters) and splats
+  only exact parameter names or aliases (no prefixes) and splats
   the values as data; there is no `Invoke-Expression` or script text. `dev`
   builds the module with `tools/BuildScripts/BuildModules.ps1 -TargetModule <X>` in
   the reproduce job (trusted `main`); `pr` uses the same build, run in
@@ -75,16 +79,13 @@ Paths below are relative to the repository root.
   Run Command output is capped at 4 KB, so the guest matches the spec's
   observed strings itself and returns only short tails. The resource group
   delete step removes the VM.
-- Scripts: specs with `"azure": false` may use `{"shell", "script"}` steps
-  (`bash`, `sh`, `pwsh`, `cmd`; `bash` is Git Bash on Windows). They run in
-  `reproduce-local`, which has only `contents: read`, no `id-token`, no
-  secrets and no sign in, so script text can never reach Azure credentials.
+- Scripts: any spec may use `{"shell", "script"}` steps (`bash`, `sh`,
+  `pwsh`, `cmd`; `bash` is Git Bash on Windows). With `"azure": false` they
+  run in `reproduce-local`, which never signs in; otherwise they run signed in.
   The CLI under test is first on `PATH` and `REPRO_SOURCE_DIR` holds the
   matching source checkout (the release tag, `dev` or the PR head).
 - Windows VMs: Azure specs may create VMs and run guest code with
-  `vm run-command` or VM extensions. Script arguments must be inline text;
-  values that look like a local path or `@file` are rejected so az never
-  reads runner files such as the token cache.
+  `vm run-command` or VM extensions, with any script argument.
 
 ### PR-head mode (`pr_number`)
 

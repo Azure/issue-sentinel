@@ -798,7 +798,7 @@ def test_execute_splats_resolved_parameters_without_printing_output(tmp_path, mo
         "SkuName": "Standard_LRS", "Location": "westus3",
         "EnableHttpsTrafficOnly": True,
     }
-    assert request["denied_parameters"] == sorted(settings.REPRO_PS_DENIED_PARAMETERS)
+    assert "denied_parameters" not in request
     # Request files hold resolved values and are removed after each step.
     assert not list((tmp_path / "repro" / "raw" / "requests").iterdir())
 
@@ -975,7 +975,6 @@ def _invoke(cmdlet="New-AzStorageAccount", parameters=None, **request):
         "module_path": None,
         "parameters": {"ResourceGroupName": "rg1", "Name": "n1"}
         if parameters is None else parameters,
-        "denied_parameters": sorted(settings.REPRO_PS_DENIED_PARAMETERS),
     }
     base.update(request)
     result = repro_ps_runner.run_pwsh(
@@ -1033,29 +1032,18 @@ def test_ps1_reports_errors_with_code_and_warnings_on_stderr(fake_home):
 
 @needs_pwsh
 @pytest.mark.parametrize("parameters, message", [
-    ({"AzureRmContext": "x"}, "-AzureRmContext is not allowed"),
-    ({"AzContext": "x"}, "-AzContext is not allowed"),
-    ({"DefaultProfile": "x"}, "-DefaultProfile is not allowed"),
-    ({"Debug": True}, "-Debug is not allowed"),
     ({"ErrorAction": "Inquire"}, "-ErrorAction must be Stop"),
-    ({"OutVariable": "x"}, "-OutVariable is not allowed"),
     ({"DefaultP": "x"}, "-DefaultP is not a parameter"),
     ({"ResourceGroupN": "x"}, "-ResourceGroupN is not a parameter"),
-    ({"ScriptBlock": "Get-Process"}, "-ScriptBlock is not allowed"),
-    ({"Credential": "x"}, "-Credential is not allowed"),
-    ({"Filter": "Get-Process"}, "takes code or credentials"),
-    ({"Account": "x"}, "takes code or credentials"),
     ({"Name; iex": "x"}, "invalid parameter name"),
     ({"Name": {"a": 1}}, "must be a scalar value"),
     ({"Tag": [["nested"]]}, "flat list of scalars"),
     ({"EnableHttpsTrafficOnly": "yes"}, "needs true or false"),
     ({"Name": "a", "AccountName": "b"}, "is given twice"),
-], ids=["azurerm-context", "az-context", "default-profile", "debug",
-        "error-action", "out-variable", "abbreviated-denied", "abbreviated",
-        "script-block", "credential", "scriptblock-type", "credential-type",
+], ids=["error-action", "abbreviated-common", "abbreviated",
         "bad-name", "hashtable", "nested-list",
         "switch-string", "duplicate-alias"])
-def test_ps1_rejects_parameters_the_validator_would_never_emit(fake_home, parameters, message):
+def test_ps1_rejects_malformed_parameters(fake_home, parameters, message):
     code, out, err = _invoke(parameters=parameters)
     assert code == 2, err
     assert message in err and out == ""
@@ -1069,9 +1057,8 @@ def test_ps1_rejects_parameters_the_validator_would_never_emit(fake_home, parame
     ({"module": "Az.Storage; iex"}, 2, "invalid module name"),
     ({"required_version": "1.0; iex"}, 2, "invalid version"),
     ({"required_version": "9.9.9"}, 3, "could not be imported"),
-    ({"denied_parameters": []}, 2, "denied parameter list is missing"),
 ], ids=["iex", "chained", "not-exported", "module", "version",
-        "missing-version", "no-denylist"])
+        "missing-version"])
 def test_ps1_rejects_bad_invoke_requests(fake_home, request_, code, message):
     exit_code, _out, err = _invoke(**request_)
     assert exit_code == code, err

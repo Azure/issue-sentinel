@@ -8,8 +8,9 @@ run-name: Live Repro (${{ inputs.issue }} @ ${{ inputs.spec_hash }}${{ inputs.pr
 # build-pr checks it out with persist-credentials: false and builds wheels with no secrets, no id-token;
 # the reproduce job only installs those wheels and runs the PR's CLI in "Run ReproSpec".
 # Never interpolate ${{ inputs.* }} into run: scripts; pass values via env.
-# Specs with "azure": false (shell scripts, any OS) run in reproduce-local, which has no
-# id-token permission, no secrets and never signs in, so scripts can't reach Azure credentials.
+# There is no command allowlist: any az command, argument or shell script may run.
+# Specs with "azure": false run in reproduce-local, which has no id-token and never signs in;
+# other specs (shell steps included) run signed in.
 # A spec's "environment" picks a runner image or a distro container (env-up and env-down in the
 # reproduce jobs), or a Windows VM in reproduce-vm. VM specs are always "azure": false: the job
 # signs in only to create the VM in the per-run group and drive it with Run Command; the VM has

@@ -79,9 +79,8 @@ def verify_spec(spec_text, spec_hash, issue, pr_number="", pr_head_sha=""):
     module = normalized.get("module")
     if normalized["tool"] == "pwsh-az" and (
         not isinstance(module, str) or not _MODULE.match(module)
-        or module not in policy.REPRO_PS_ALLOWED_MODULES
     ):
-        errors.append("module: missing or not allowlisted")
+        errors.append("module: missing or not an Az module")
     if pr_number:
         if normalized["issue"].split("#", 1)[0] != POWERSHELL_REPOSITORY:
             errors.append(
@@ -571,7 +570,6 @@ def invoke_request(step, spec, install):
         "required_version": None,
         "module_path": None,
         "parameters": step.get("parameters") or {},
-        "denied_parameters": sorted(policy.REPRO_PS_DENIED_PARAMETERS),
     }
     if module == spec["module"]:
         if install.get("module_path"):
