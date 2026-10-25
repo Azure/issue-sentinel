@@ -469,10 +469,49 @@ def test_build_requires_the_verified_head(tmp_path, monkeypatch, capsys):
     sha = HEAD
     assert repro_runner.main(["build"]) == 0
     wheel = next(c for c in calls if "wheel" in c)
-    assert "--no-deps" in wheel
+    assert "--no-deps" in wheel and "--no-build-isolation" not in wheel
     spec = repro_runner.verify_from_env(_env(inputs))
     assert len(repro_runner.load_wheel_manifest(
         spec, HEAD, tmp_path / "repro" / "wheels")) == 3
+
+
+def test_dev_extension_install_builds_without_isolation():
+    commands = dict(repro_runner._install_commands(
+        {"tool": "az-extension:containerapp"}, "dev"))
+    assert commands["pip-upgrade"][-3:] == ["pip", "setuptools", "wheel"]
+    names = list(commands)
+    assert names.index("azure-cli") < names.index("extension")
+    assert "--no-build-isolation" in commands["extension"]
+    assert commands["extension"][-1].endswith("containerapp")
+
+
+def test_extension_build_installs_build_deps_and_skips_isolation(tmp_path, monkeypatch):
+    inputs = _dispatch(_spec(issue="Azure/azure-cli-extensions#9000",
+                             tool="az-extension:containerapp", setup=[],
+                             repro=[{"argv": ["az", "containerapp", "list"]}]))
+    for key, value in _env(inputs, REPRO_PR_NUMBER="42",
+                           REPRO_PR_HEAD_SHA=HEAD).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "repro" / "src" / "src" / "containerapp").mkdir(parents=True)
+    calls = []
+
+    def fake_run(argv, log_stem, **kwargs):
+        argv = [str(a) for a in argv]
+        calls.append(argv)
+        out = Path(str(log_stem) + ".out")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(HEAD + "\n")
+        if "--wheel-dir" in argv:
+            (tmp_path / "repro" / "wheels" / "containerapp-1.0.0-py3-none-any.whl").write_bytes(b"x")
+        return {"exit_code": 0, "duration_seconds": 0.1, "timed_out": False,
+                "stdout": str(out), "stderr": str(out)}
+
+    monkeypatch.setattr(repro_runner, "run_quiet", fake_run)
+    assert repro_runner.main(["build"]) == 0
+    deps, wheel = calls[-2], calls[-1]
+    assert deps[3] == "install" and deps[-3:] == ["setuptools", "wheel", "azure-cli"]
+    assert "--no-build-isolation" in wheel and wheel[-1].endswith("containerapp")
 
 
 def test_sanitized_pr_document_records_the_head(tmp_path, monkeypatch):

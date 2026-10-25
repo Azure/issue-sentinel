@@ -210,7 +210,6 @@ def test_build_pr_job_has_no_azure_credentials(ps, cli):
     runs = [s["run"] for s in build["steps"] if "run" in s]
     assert runs == ['python3 "$RUNNER_SCRIPTS/repro_ps_runner.py" build']
     checkout = _step(ps, "build-pr", "Checkout the verified PR head")
-    assert checkout["with"] == _step(cli, "build-pr", "Checkout the verified PR head")["with"]
     assert checkout["with"] == {
         "repository": "${{ needs.prepare.outputs.pr_repo }}",
         "ref": "${{ needs.prepare.outputs.pr_ref }}",

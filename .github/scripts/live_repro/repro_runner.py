@@ -475,13 +475,18 @@ def cmd_verify(args):
     return 0
 
 
+# Extension setup.py files import azure-cli (and requests) at build time, as
+# upstream builds them inside an azdev env, so they build without isolation.
+EXTENSION_BUILD_TOOLS = ("setuptools", "wheel")
+
+
 def _install_commands(spec, version, wheels=None):
     python = str(venv_python())
     pip = [python, "-m", "pip", "install", "--disable-pip-version-check",
            "--no-input"]
     extension = extension_name(spec)
     commands = [("venv", [sys.executable, "-m", "venv", str(VENV_DIR)])]
-    commands.append(("pip-upgrade", [*pip, "--upgrade", "pip"]))
+    commands.append(("pip-upgrade", [*pip, "--upgrade", "pip", *EXTENSION_BUILD_TOOLS]))
     if version == "pr":
         # Prebuilt wheels only: installing a wheel runs none of its code.
         files = [str((WHEEL_DIR / w["file"]).resolve()) for w in wheels or []]
@@ -517,7 +522,8 @@ def _install_commands(spec, version, wheels=None):
             ]))
         else:
             commands.append(("extension", [
-                *pip, "--target", str((EXTENSION_DIR / extension).resolve()),
+                *pip, "--no-build-isolation", "--target",
+                str((EXTENSION_DIR / extension).resolve()),
                 str(SOURCE_DIR / "src" / extension),
             ]))
     return commands
@@ -596,9 +602,19 @@ def cmd_build(args):
     if WHEEL_DIR.exists():
         shutil.rmtree(WHEEL_DIR)
     WHEEL_DIR.mkdir(parents=True)
+    pip = [sys.executable, "-m", "pip"]
+    quiet = ["--disable-pip-version-check", "--no-input"]
+    isolation = []
+    if extension:
+        deps = run_quiet([*pip, "install", *quiet, *EXTENSION_BUILD_TOOLS, "azure-cli"],
+                         RAW_DIR / "build" / "build-deps", timeout=INSTALL_TIMEOUT_SECONDS)
+        print(f"build deps: exit {deps['exit_code']} ({deps['duration_seconds']}s)")
+        if deps["exit_code"] != 0:
+            print("::error::Building the PR head failed: build dependencies did not install.")
+            return 1
+        isolation = ["--no-build-isolation"]
     result = run_quiet([
-        sys.executable, "-m", "pip", "wheel", "--no-deps",
-        "--disable-pip-version-check", "--no-input",
+        *pip, "wheel", "--no-deps", *isolation, *quiet,
         "--wheel-dir", str(WHEEL_DIR), *map(str, paths),
     ], RAW_DIR / "build" / "wheel", timeout=INSTALL_TIMEOUT_SECONDS)
     print(f"build wheels: exit {result['exit_code']} ({result['duration_seconds']}s)")
