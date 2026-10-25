@@ -988,3 +988,13 @@ def test_windows_venv_az_matches_the_msi_bash_wrapper(tmp_path):
     assert "\r" not in text and "execl" not in text
     assert text.startswith("#!/usr/bin/env bash\n")
     assert 'exec "$(dirname "${BASH_SOURCE[0]}")/python.exe" -m azure.cli "$@"' in text
+
+
+def test_windows_children_keep_the_runner_az_login(monkeypatch):
+    env = {"PATH": "p", "AZURE_CONFIG_DIR": r"C:\azureCli", "SECRET": "x"}
+    monkeypatch.setattr(repro_runner, "WINDOWS", True)
+    child = repro_runner.child_env(env=env)
+    assert child["AZURE_CONFIG_DIR"] == r"C:\azureCli"
+    assert "SECRET" not in child
+    monkeypatch.setattr(repro_runner, "WINDOWS", False)
+    assert "AZURE_CONFIG_DIR" not in repro_runner.child_env(env=env)
