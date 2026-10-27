@@ -365,6 +365,15 @@ jobs:
           echo "ran_tests=${ran}" >> "$GITHUB_OUTPUT"
           exit 0
 
+      - name: Look up VM sizes the test subscription allows
+        # A capacity failure is often a size the subscription can't use in that region;
+        # record the allowed regions and sizes so the fix doesn't have to guess.
+        if: always() && steps.test.outputs.ran_tests == 'true' && steps.test.outputs.exit_code != '0'
+        continue-on-error: true
+        run: |
+          python3 issue-sentinel-workflow/.github/scripts/vm_size_availability.py \
+            test-output/results.xml test-output/vm-capacity.json
+
       - name: Collect live-test recordings
         id: rec
         if: >-
