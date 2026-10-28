@@ -370,9 +370,18 @@ jobs:
         # record the allowed regions and sizes so the fix doesn't have to guess.
         if: always() && steps.test.outputs.ran_tests == 'true' && steps.test.outputs.exit_code != '0'
         continue-on-error: true
+        env:
+          PR_REPO_NAME: ${{ steps.pr.outputs.repo }}
         run: |
+          # A test that crashes in a forked process records its Azure error only in the
+          # cassette it regenerated, so pass those too.
+          recordings=$(git -C "$PR_REPO_NAME" status --porcelain -uall \
+            | awk '{print $2}' | grep -E '/recordings/.*\.yaml$' \
+            | sed "s|^|$PR_REPO_NAME/|" || true)
+          # Recording paths have no spaces, so splitting the list into arguments is safe.
+          # shellcheck disable=SC2086
           python3 issue-sentinel-workflow/.github/scripts/vm_size_availability.py \
-            test-output/results.xml test-output/vm-capacity.json
+            test-output/results.xml test-output/vm-capacity.json $recordings
 
       - name: Collect live-test recordings
         id: rec
