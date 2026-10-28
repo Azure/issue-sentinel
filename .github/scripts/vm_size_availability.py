@@ -68,13 +68,24 @@ def recording_failures(paths):
                 text = handle.read()
         except OSError:
             continue
-        # Each "- request:" starts one interaction; join the lines YAML wrapped.
+        # Each "- request:" starts one interaction.
         for interaction in re.split(r"^- request:", text, flags=re.M)[1:]:
-            interaction = re.sub(r"\s*\n\s*", " ", interaction)
+            interaction = _unwrap_yaml(interaction)
             if _CAPACITY.search(interaction):
-                _add(pairs, _VM_SIZE.search(interaction) or _SIZE.search(interaction),
+                # The error names the failed size; a deployment can request several.
+                _add(pairs, _SIZE.search(interaction) or _VM_SIZE.search(interaction),
                      _REGION.search(interaction))
     return pairs
+
+
+def _unwrap_yaml(text):
+    """Undo YAML line folding and quote escaping so error text reads as Azure sent it.
+
+    Parsing the cassette would need PyYAML, which the runner's Python may not have.
+    """
+    text = re.sub(r"\\\n\s*(?:\\(?= ))?", "", text)  # double-quoted line continuation
+    text = re.sub(r"\s*\n\s*", " ", text)  # folded line break
+    return text.replace("''", "'").replace('\\"', '"').replace("\\\\", "\\")
 
 
 def _usable(sku):

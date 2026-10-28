@@ -148,6 +148,40 @@ class VmSizeAvailabilityTest(unittest.TestCase):
         )
         self.assertEqual(report["capacity_failures"][0]["sizes_allowed_in_region"], ["Standard_B2s"])
 
+    def _recorded(self, recording):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary, "test_vm.yaml")
+            path.write_text(recording)
+            return MODULE.recording_failures([str(path)])
+
+    def test_recording_decodes_single_quoted_yaml(self):
+        recording = (
+            "interactions:\n- request:\n    body: null\n    method: PUT\n  response:\n"
+            "    body:\n      string: '{\"error\":{\"code\":\"SkuNotAvailable\",\"message\":\"The\n"
+            "        requested VM size for resource ''Following SKUs have failed for Capacity\n"
+            "        Restrictions: Standard_D2s_v3'' is currently not available in location\n"
+            "        ''WestUS3''.\"}}'\n"
+        )
+        self.assertEqual(self._recorded(recording), [("Standard_D2s_v3", "westus3")])
+
+    def test_recording_decodes_double_quoted_line_continuation(self):
+        recording = (
+            "interactions:\n- request:\n    body: '{\"vmSize\": \"Standard_D2s_v4\"}'\n"
+            "  response:\n    body:\n"
+            "      string: \"{\\\"error\\\":{\\\"code\\\":\\\"QuotaExceeded\\\",\\\"message\\\":\\\"standardDSv4Family\n"
+            "        Cores quota. Location:\\\n        \\ westus2, Current Limit: 0\\\"}}\"\n"
+        )
+        self.assertEqual(self._recorded(recording), [("Standard_D2s_v4", "westus2")])
+
+    def test_recording_prefers_the_size_named_in_the_error(self):
+        recording = (
+            "interactions:\n- request:\n    body: '{\"resources\": [{\"vmSize\": \"Standard_B2s\"},\n"
+            "      {\"vmSize\": \"Standard_D2s_v3\"}]}'\n  response:\n    body:\n"
+            "      string: '{\"error\":{\"code\":\"SkuNotAvailable\",\"message\":\"Capacity Restrictions:\n"
+            "        Standard_D2s_v3 is currently not available in location ''eastus''.\"}}'\n"
+        )
+        self.assertEqual(self._recorded(recording), [("Standard_D2s_v3", "eastus")])
+
     def test_writes_nothing_without_a_capacity_failure(self):
         self.assertIsNone(self._run(_results("AssertionError: 1 != 2")))
         self.assertIsNone(self._run("not xml"))
