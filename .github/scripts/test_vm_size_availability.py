@@ -182,6 +182,16 @@ class VmSizeAvailabilityTest(unittest.TestCase):
         )
         self.assertEqual(self._recorded(recording), [("Standard_D2s_v3", "eastus")])
 
+    def test_a_region_whose_quota_lookup_fails_is_skipped(self):
+        def usage(region):
+            if region == "centralus":
+                raise MODULE.subprocess.CalledProcessError(1, "az")
+            return _list_usage(region)
+
+        report = self._run(_results(QUOTA_ERROR), list_usage=usage)
+        self.assertEqual(report["capacity_failures"][0]["regions_allowing_size"], ["southcentralus"])
+        self.assertEqual(report["capacity_failures"][0]["sizes_allowed_in_region"], ["Standard_B2s"])
+
     def test_writes_nothing_without_a_capacity_failure(self):
         self.assertIsNone(self._run(_results("AssertionError: 1 != 2")))
         self.assertIsNone(self._run("not xml"))
