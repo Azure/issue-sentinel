@@ -4,9 +4,10 @@ A live test that fails with SkuNotAvailable or QuotaExceeded usually picked a si
 subscription is not allowed, or has no core quota for, in that region. Guessing other
 regions can loop forever, so this asks Azure which regions allow the failed size with free
 quota and which small sizes the failed region allows with free quota, and writes the answer
-next to results.xml for the agent to use.
+next to results.xml for the agent to use. A test that crashes in a forked process leaves
+only its exit status in results.xml, so the recordings the run regenerated are read too.
 
-Usage: vm_size_availability.py RESULTS_XML OUTPUT_JSON
+Usage: vm_size_availability.py RESULTS_XML OUTPUT_JSON [RECORDING_YAML ...]
 """
 
 import json
@@ -21,6 +22,7 @@ _CAPACITY = re.compile(
 )
 # A quota error names the family, not the size, so fall back to the size the test passed.
 _SIZE = re.compile(r"(?:Capacity Restrictions: |VM size |--size )'?(Standard_[A-Za-z0-9_]+)")
+_VM_SIZE = re.compile(r'vmSize\\?"\s*:\s*\\?"(Standard_[A-Za-z0-9_]+)')
 _REGION = re.compile(r"(?:in location '?|Location: )([A-Za-z0-9]+)")
 # Regions listed for the subscription where live tests can't run.
 _UNUSABLE_REGION = re.compile(r"(?:stg|euap)$")
@@ -37,6 +39,13 @@ PREFERRED_REGIONS = (
 )
 
 
+def _add(pairs, size, region):
+    if size and region:
+        pair = (size.group(1), region.group(1).lower())
+        if pair not in pairs:
+            pairs.append(pair)
+
+
 def capacity_failures(results_xml):
     """Distinct (size, region) pairs from failed test cases that hit a capacity error."""
     pairs = []
@@ -45,13 +54,26 @@ def capacity_failures(results_xml):
             if child.tag not in ("failure", "error"):
                 continue
             text = f"{child.get('message') or ''}\n{child.text or ''}"
-            if not _CAPACITY.search(text):
-                continue
-            size, region = _SIZE.search(text), _REGION.search(text)
-            if size and region:
-                pair = (size.group(1), region.group(1).lower())
-                if pair not in pairs:
-                    pairs.append(pair)
+            if _CAPACITY.search(text):
+                _add(pairs, _SIZE.search(text), _REGION.search(text))
+    return pairs
+
+
+def recording_failures(paths):
+    """(size, region) pairs from recorded requests whose response was a capacity error."""
+    pairs = []
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError:
+            continue
+        # Each "- request:" starts one interaction; join the lines YAML wrapped.
+        for interaction in re.split(r"^- request:", text, flags=re.M)[1:]:
+            interaction = re.sub(r"\s*\n\s*", " ", interaction)
+            if _CAPACITY.search(interaction):
+                _add(pairs, _VM_SIZE.search(interaction) or _SIZE.search(interaction),
+                     _REGION.search(interaction))
     return pairs
 
 
@@ -137,11 +159,14 @@ def availability(size, region, list_skus=_skus, list_usage=_usage):
     }
 
 
-def main(results_xml, output_json, list_skus=_skus, list_usage=_usage):
+def main(results_xml, output_json, recordings=(), list_skus=_skus, list_usage=_usage):
     try:
         pairs = capacity_failures(results_xml)
     except (OSError, ET.ParseError):
-        return 0
+        pairs = []
+    for pair in recording_failures(recordings):
+        if pair not in pairs:
+            pairs.append(pair)
     if not pairs:
         return 0
     report = []
@@ -158,4 +183,4 @@ def main(results_xml, output_json, list_skus=_skus, list_usage=_usage):
 
 
 if __name__ == "__main__":
-    sys.exit(main(*sys.argv[1:3]))
+    sys.exit(main(sys.argv[1], sys.argv[2], sys.argv[3:]))
