@@ -154,7 +154,13 @@ def availability(size, region, list_skus=_skus, list_usage=_usage):
     # One quota lookup per region, so check the likeliest regions first and stop early.
     regions = []
     for candidate in _ordered(set(allowed) - {region}, PREFERRED_REGIONS)[:_MAX_QUOTA_LOOKUPS]:
-        if _has_quota(allowed[candidate], _free_cores(list_usage(candidate))):
+        try:
+            usage = list_usage(candidate)
+        except (subprocess.SubprocessError, OSError, ValueError) as error:
+            # Some listed regions aren't enabled for the subscription; skip them.
+            print(f"::notice::Skipped {candidate}: {error}")
+            continue
+        if _has_quota(allowed[candidate], _free_cores(usage)):
             regions.append(candidate)
     free = _free_cores(list_usage(region))
     sizes = [
