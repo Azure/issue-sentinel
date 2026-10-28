@@ -315,6 +315,8 @@ jobs:
           else
             azdev setup -c azure-cli
           fi
+          # pytest 9.2.0 makes every pytest-forked child exit with status 3; pin until that's fixed.
+          python -m pip install "pytest<9.2"
 
       - name: Run azdev test (live, series) — changed tests only
         id: test
