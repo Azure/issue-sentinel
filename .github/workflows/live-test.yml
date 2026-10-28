@@ -136,7 +136,7 @@ jobs:
           head_owner=$(echo "$pr_json" | jq -r .head.repo.owner.login)
           pr_author=$(echo "$pr_json" | jq -r .user.login)
           has_job_marker=$(echo "$pr_json" | jq -r \
-            '(.body // "") | test("<!-- agent-assist:foundry-job [a-f0-9]{64} -->")')
+            '(.body // "") | test("<!-- agent-assist:(foundry-job |publication v2-)[a-f0-9]{64} -->")')
           agent_candidate=false
           if [ "$head_repo" != "$PR_REPO" ] \
               && [ "$head_owner" = "$pr_author" ] \
@@ -820,7 +820,7 @@ jobs:
           actual_sha=$(echo "$pr_json" | jq -r .head.sha)
           actual_author=$(echo "$pr_json" | jq -r .user.login)
           has_job_marker=$(echo "$pr_json" | jq -r \
-            '(.body // "") | test("<!-- agent-assist:foundry-job [a-f0-9]{64} -->")')
+            '(.body // "") | test("<!-- agent-assist:(foundry-job |publication v2-)[a-f0-9]{64} -->")')
           if [ "$actual_repo" != "$expected_repo" ] \
               || [ "$actual_repo" != "$EXPECTED_HEAD_REPO" ] \
               || [ "$actual_ref" != "$EXPECTED_HEAD_REF" ] \
